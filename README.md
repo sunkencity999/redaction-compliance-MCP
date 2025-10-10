@@ -190,14 +190,56 @@ function ChatComponent() {
 
 ---
 
+## 🔄 Transparent Proxy Mode (NEW!)
+
+**Zero-code integration for existing OpenAI/Claude/Gemini apps:**
+
+Just change your API base URL and MCP automatically protects all calls!
+
+```python
+import openai
+
+# Change this one line:
+openai.api_base = "https://mcp.yourcompany.com/v1"
+
+# Your existing code works unchanged!
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "My AWS key is AKIA..."}]
+)
+# MCP automatically redacts before OpenAI sees it!
+```
+
+**Supported Providers:**
+- ✅ **OpenAI** (`/v1/chat/completions`)
+- ✅ **Claude** (`/v1/messages`)  
+- ✅ **Gemini** (`/v1/models/{model}:generateContent`)
+
+**Setup:**
+```bash
+# In .env file
+PROXY_MODE_ENABLED=true
+DETOKENIZE_TRUSTED_CALLERS=openai-proxy,claude-proxy,gemini-proxy
+```
+
+**Full Guide:** See `TRANSPARENT_PROXY.md`
+
+---
+
 ## 🌐 API Endpoints (REST)
 
+**Core MCP Endpoints:**
 - `GET /health` → server health check
 - `POST /classify` → classify payload sensitivity
 - `POST /redact` → sanitize payload, return token_map_handle
 - `POST /detokenize` → reinject allowed tokens (trusted clients only)
 - `POST /route` → produce an execution plan (internal/external, redaction steps)
 - `POST /audit/query` → simple audit search
+
+**Transparent Proxy Endpoints** (when `PROXY_MODE_ENABLED=true`):
+- `POST /v1/chat/completions` → OpenAI-compatible proxy
+- `POST /v1/messages` → Claude-compatible proxy
+- `POST /v1/models/{model}:generateContent` → Gemini-compatible proxy
 
 **Full API documentation:** See `mcp_redaction/models.py` for request/response schemas.
 

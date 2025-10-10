@@ -317,6 +317,18 @@ MCP_ENCRYPTION_KEY="$MCP_ENCRYPTION_KEY"
 TOKEN_BACKEND=redis
 REDIS_URL=redis://localhost:6379/0
 
+# Transparent Proxy Mode (OpenAI, Claude, Gemini compatible)
+PROXY_MODE_ENABLED=true
+OPENAI_UPSTREAM_URL=https://api.openai.com/v1/chat/completions
+CLAUDE_UPSTREAM_URL=https://api.anthropic.com/v1/messages
+GEMINI_UPSTREAM_URL=https://generativelanguage.googleapis.com
+
+# Trusted Callers for Detokenization
+DETOKENIZE_TRUSTED_CALLERS=demo_client,openai-proxy,claude-proxy,gemini-proxy
+
+# CORS Configuration (for browser-based apps)
+CORS_ORIGINS=*
+
 # SIEM Configuration
 EOF
 
@@ -351,6 +363,7 @@ EOF
     chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/.env"
     
     log_info "Environment configuration created"
+    log_info "✓ Transparent Proxy Mode ENABLED (OpenAI/Claude/Gemini compatible)"
 }
 
 create_systemd_service() {
@@ -933,8 +946,19 @@ print_success() {
         echo "  Status:   Check SIEM platform for incoming logs"
     fi
     
-    echo -e "\n${BLUE}Client SDK Integration:${NC}"
+    echo -e "\n${BLUE}🔄 Transparent Proxy Mode: ENABLED${NC}"
+    echo "  Zero-code integration - just change your API base URL!"
+    echo ""
+    echo "  OpenAI:   openai.api_base = \"$([ "$NGINX_SETUP" == "complete" ] && echo "https://${SERVER_HOSTNAME}" || echo "http://localhost:8019")/v1\""
+    echo "  Claude:   client = Anthropic(base_url=\"$([ "$NGINX_SETUP" == "complete" ] && echo "https://${SERVER_HOSTNAME}" || echo "http://localhost:8019")/v1/messages\")"
+    echo "  Gemini:   genai.configure(client_options={\"api_endpoint\": \"$([ "$NGINX_SETUP" == "complete" ] && echo "https://${SERVER_HOSTNAME}" || echo "http://localhost:8019")/v1\"})"
+    echo ""
+    echo "  Your existing OpenAI/Claude/Gemini code works unchanged!"
+    echo "  See TRANSPARENT_PROXY.md for complete guide"
+    
+    echo -e "\n${BLUE}Client SDK Integration (Alternative Method):${NC}"
     echo "  Python SDK:      Installed in $INSTALL_DIR/.venv"
+    echo "  JavaScript SDK:  $INSTALL_DIR/mcp_client_js/"
     echo "  Examples:        $INSTALL_DIR/examples/"
     echo "    • basic_example.py        - Simple redact/detokenize"
     echo "    • openai_integration.py   - OpenAI wrapper"
@@ -942,10 +966,10 @@ print_success() {
     echo ""
     echo "  Test SDK:        cd $INSTALL_DIR && .venv/bin/python examples/basic_example.py"
     
-    echo -e "\n${BLUE}Application Integration (Quick Start):${NC}"
+    echo -e "\n${BLUE}Direct API Integration (Advanced):${NC}"
     cat <<'INTEGRATION'
   
-  # In your application code:
+  # Python SDK method:
   from mcp_client import MCPClient, MCPConfig
   
   mcp = MCPClient(MCPConfig(
@@ -953,12 +977,9 @@ print_success() {
       caller="your-app-name"
   ))
   
-  # Before calling LLM:
   sanitized, handle = mcp.redact(user_input)
   llm_response = call_your_llm(sanitized)
   final = mcp.detokenize(llm_response, handle)
-  
-  # See examples/ directory for complete code
 INTEGRATION
     
     echo -e "\n${BLUE}Next Steps:${NC}"

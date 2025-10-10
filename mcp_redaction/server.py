@@ -128,8 +128,8 @@ def classify(req: ClassifyRequest):
     })
     return ClassifyResponse(ok=True, categories=cats, suggested_action=decision.get("action"))
 
-@app.post("/redact", response_model=RedactResponse)
-def redact(req: RedactRequest):
+def redact_internal(req: RedactRequest) -> Dict[str, Any]:
+    """Internal redact function for reuse by proxy."""
     text = req.payload if isinstance(req.payload, str) else json.dumps(req.payload, ensure_ascii=False)
     if len(text.encode("utf-8")) > settings.max_payload_kb * 1024:
         raise HTTPException(413, "Payload too large")
@@ -159,14 +159,25 @@ def redact(req: RedactRequest):
         "decision": {"action":"redact"},
         "redaction_counts": {r.type: sum(1 for x in redactions if x.type==r.type) for r in redactions}
     })
-    return RedactResponse(ok=True, sanitized_payload=sanitized, token_map_handle=handle, redactions=redactions)
+    return {
+        "ok": True,
+        "sanitized_payload": sanitized,
+        "token_map_handle": handle,
+        "redactions": redactions
+    }
 
-@app.post("/detokenize", response_model=DetokenizeResponse)
-def detokenize(req: DetokenizeRequest):
+@app.post("/redact", response_model=RedactResponse)
+def redact(req: RedactRequest):
+    result = redact_internal(req)
+    return RedactResponse(**result)
+
+def detokenize_internal(req: DetokenizeRequest, skip_auth: bool = False) -> Dict[str, Any]:
+    """Internal detokenize function for reuse by proxy."""
     ctx = req.context or Context()
-    trusted = [x.strip() for x in settings.detokenize_trusted_callers.split(",") if x.strip()]
-    if ctx.caller not in trusted:
-        raise HTTPException(403, "Caller not trusted to detokenize")
+    if not skip_auth:
+        trusted = [x.strip() for x in settings.detokenize_trusted_callers.split(",") if x.strip()]
+        if ctx.caller not in trusted:
+            raise HTTPException(403, "Caller not trusted to detokenize")
     text = req.payload if isinstance(req.payload, str) else json.dumps(req.payload, ensure_ascii=False)
     kv, meta = tokens.all(req.token_map_handle)
     def replace(match):
@@ -185,7 +196,15 @@ def detokenize(req: DetokenizeRequest):
         "categories": [{"type":c,"confidence":1.0} for c in set(meta.values())],
         "decision": {"allow_categories": req.allow_categories}
     })
-    return DetokenizeResponse(ok=True, restored_payload=restored)
+    return {
+        "ok": True,
+        "restored_payload": restored
+    }
+
+@app.post("/detokenize", response_model=DetokenizeResponse)
+def detokenize(req: DetokenizeRequest):
+    result = detokenize_internal(req)
+    return DetokenizeResponse(**result)
 
 @app.post("/route", response_model=RouteResponse)
 def route(req: RouteRequest):
@@ -230,7 +249,8 @@ def health_check():
             "version": "2.0.0",
             "token_backend": settings.token_backend,
             "policy_version": policy.policy.get("version", 1),
-            "siem_enabled": bool(audit.siem_shipper)
+            "siem_enabled": bool(audit.siem_shipper),
+            "proxy_mode_enabled": bool(os.getenv("PROXY_MODE_ENABLED", "false").lower() == "true")
         })
     except Exception as e:
         return JSONResponse(
@@ -240,3 +260,175 @@ def health_check():
                 "error": str(e)
             }
         )
+
+# ============================================================================
+# TRANSPARENT PROXY MODE - OpenAI, Claude, Gemini Compatible
+# ============================================================================
+
+@app.post("/v1/chat/completions")
+async def proxy_openai_chat(request: Request):
+    """
+    OpenAI-compatible endpoint for transparent proxying.
+    Automatically redacts requests and detokenizes responses.
+    
+    Usage:
+      export OPENAI_API_BASE=https://mcp.yourcompany.com/v1
+      # Your existing OpenAI code works unchanged!
+    """
+    if os.getenv("PROXY_MODE_ENABLED", "false").lower() != "true":
+        raise HTTPException(
+            status_code=404,
+            detail="Proxy mode not enabled. Set PROXY_MODE_ENABLED=true"
+        )
+    
+    from .proxy import TransparentProxyHandler
+    
+    body = await request.json()
+    headers = dict(request.headers)
+    
+    # Get upstream OpenAI URL
+    upstream_url = os.getenv("OPENAI_UPSTREAM_URL", "https://api.openai.com/v1/chat/completions")
+    
+    # Extract caller from custom header or use default
+    caller = headers.get("x-mcp-caller", "openai-proxy")
+    
+    context = {
+        "caller": caller,
+        "region": headers.get("x-mcp-region", "us"),
+        "env": headers.get("x-mcp-env", "prod"),
+        "conversation_id": headers.get("x-mcp-conversation-id", f"openai-{time.time()}")
+    }
+    
+    proxy_handler = TransparentProxyHandler({
+        "redact_internal": redact_internal,
+        "detokenize_internal": detokenize_internal,
+        "tokens": tokens
+    })
+    
+    try:
+        result = await proxy_handler.process_request(
+            provider="openai",
+            target_url=upstream_url,
+            headers=headers,
+            body=body,
+            context=context
+        )
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+
+@app.post("/v1/messages")
+async def proxy_claude(request: Request):
+    """
+    Claude-compatible endpoint for transparent proxying.
+    Automatically redacts requests and detokenizes responses.
+    
+    Usage:
+      export ANTHROPIC_API_URL=https://mcp.yourcompany.com/v1/messages
+      # Your existing Claude code works unchanged!
+    """
+    if os.getenv("PROXY_MODE_ENABLED", "false").lower() != "true":
+        raise HTTPException(
+            status_code=404,
+            detail="Proxy mode not enabled. Set PROXY_MODE_ENABLED=true"
+        )
+    
+    from .proxy import TransparentProxyHandler
+    
+    body = await request.json()
+    headers = dict(request.headers)
+    
+    upstream_url = os.getenv("CLAUDE_UPSTREAM_URL", "https://api.anthropic.com/v1/messages")
+    
+    caller = headers.get("x-mcp-caller", "claude-proxy")
+    
+    context = {
+        "caller": caller,
+        "region": headers.get("x-mcp-region", "us"),
+        "env": headers.get("x-mcp-env", "prod"),
+        "conversation_id": headers.get("x-mcp-conversation-id", f"claude-{time.time()}")
+    }
+    
+    proxy_handler = TransparentProxyHandler({
+        "redact_internal": redact_internal,
+        "detokenize_internal": detokenize_internal,
+        "tokens": tokens
+    })
+    
+    try:
+        result = await proxy_handler.process_request(
+            provider="claude",
+            target_url=upstream_url,
+            headers=headers,
+            body=body,
+            context=context
+        )
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+
+@app.post("/v1beta/models/{model}:generateContent")
+@app.post("/v1/models/{model}:generateContent")
+async def proxy_gemini(model: str, request: Request):
+    """
+    Gemini-compatible endpoint for transparent proxying.
+    Automatically redacts requests and detokenizes responses.
+    
+    Usage:
+      Set base_url in genai.configure()
+      # Your existing Gemini code works unchanged!
+    """
+    if os.getenv("PROXY_MODE_ENABLED", "false").lower() != "true":
+        raise HTTPException(
+            status_code=404,
+            detail="Proxy mode not enabled. Set PROXY_MODE_ENABLED=true"
+        )
+    
+    from .proxy import TransparentProxyHandler
+    
+    body = await request.json()
+    headers = dict(request.headers)
+    
+    # Determine if v1 or v1beta
+    path_prefix = "v1beta" if "/v1beta/" in str(request.url) else "v1"
+    
+    # Extract API key from query params (Gemini style)
+    api_key = request.query_params.get("key", "")
+    
+    upstream_base = os.getenv("GEMINI_UPSTREAM_URL", "https://generativelanguage.googleapis.com")
+    upstream_url = f"{upstream_base}/{path_prefix}/models/{model}:generateContent"
+    if api_key:
+        upstream_url += f"?key={api_key}"
+    
+    caller = headers.get("x-mcp-caller", "gemini-proxy")
+    
+    context = {
+        "caller": caller,
+        "region": headers.get("x-mcp-region", "us"),
+        "env": headers.get("x-mcp-env", "prod"),
+        "conversation_id": headers.get("x-mcp-conversation-id", f"gemini-{time.time()}")
+    }
+    
+    proxy_handler = TransparentProxyHandler({
+        "redact_internal": redact_internal,
+        "detokenize_internal": detokenize_internal,
+        "tokens": tokens
+    })
+    
+    try:
+        result = await proxy_handler.process_request(
+            provider="gemini",
+            target_url=upstream_url,
+            headers=headers,
+            body=body,
+            context=context
+        )
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
