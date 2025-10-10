@@ -1,0 +1,128 @@
+version: 2
+# Geo/Region constraints for compliance
+geo_constraints:
+  restricted_regions:
+    # Regions subject to export control restrictions
+    - cn  # China
+    - ru  # Russia
+    - ir  # Iran
+    - kp  # North Korea
+    - sy  # Syria
+  
+  region_routing:
+    # US-based requests
+    us:
+      allow_external: true
+      preferred_models: ["external:azure_openai:gpt-4o-mini", "external:openai:gpt-4o-mini"]
+      internal_fallback: ["internal:llama3-70b"]
+    
+    # EU-based requests (GDPR compliance)
+    eu:
+      allow_external: true
+      data_residency: eu
+      preferred_models: ["external:azure_openai_eu:gpt-4o-mini"]
+      internal_fallback: ["internal:llama3-70b-eu"]
+    
+    # Asia-Pacific (excluding restricted regions)
+    apac:
+      allow_external: true
+      preferred_models: ["external:azure_openai_apac:gpt-4o-mini"]
+      internal_fallback: ["internal:llama3-70b"]
+    
+    # Restricted regions - internal only
+    restricted:
+      allow_external: false
+      preferred_models: ["internal:llama3-70b"]
+
+# Caller-based routing rules
+caller_rules:
+  # Trusted callers for detokenization
+  trusted_callers:
+    - incident-mgr
+    - runbook-executor
+    - ops-dashboard
+    - security-audit
+  
+  # Per-caller specific routing
+  caller_routing:
+    incident-mgr:
+      allow_categories: ["pii", "ops_sensitive"]
+      max_detokenize: true
+    
+    runbook-executor:
+      allow_categories: ["ops_sensitive"]
+      max_detokenize: true
+    
+    external-analyst:
+      allow_categories: []
+      max_detokenize: false
+      force_redact: true
+
+# Category-based routes (evaluated in order)
+routes:
+  # Secrets must never leave the system
+  - name: secrets_block
+    match: {category: secret}
+    action: block
+    applies_to:
+      regions: ["*"]
+      callers: ["*"]
+  
+  # Export-controlled content - internal only
+  - name: export_control_internal
+    match: {category: export_control}
+    action: internal_only
+    allow_models: ["internal:llama3-70b"]
+    applies_to:
+      regions: ["*"]
+      callers: ["*"]
+  
+  # PII handling with geo-awareness
+  - name: pii_to_external_us
+    match: {category: pii}
+    action: redact
+    redact:
+      strategy: token
+      scope: {persist: conversation}
+      allow_detokenize: true
+    allow_models: ["external:openai:gpt-4o-mini", "external:azure_openai:gpt-4o-mini"]
+    allow_categories: ["pii", "ops_sensitive"]
+    applies_to:
+      regions: ["us", "apac"]
+      callers: ["*"]
+  
+  - name: pii_to_external_eu
+    match: {category: pii}
+    action: redact
+    redact:
+      strategy: token
+      scope: {persist: conversation}
+      allow_detokenize: true
+      data_residency: eu
+    allow_models: ["external:azure_openai_eu:gpt-4o-mini"]
+    allow_categories: ["pii"]
+    applies_to:
+      regions: ["eu"]
+      callers: ["*"]
+  
+  # Ops-sensitive data
+  - name: ops_sensitive_external
+    match: {category: ops_sensitive}
+    action: redact
+    redact:
+      strategy: fpe_mask
+      allow_detokenize: true
+    allow_models: ["external:azure_openai:gpt-4o-mini", "external:openai:gpt-4o-mini"]
+    allow_categories: ["ops_sensitive"]
+    applies_to:
+      regions: ["us", "eu", "apac"]
+      callers: ["*"]
+  
+  # Default allow for non-sensitive content
+  - name: default_allow
+    match: {category: null}
+    action: allow
+    allow_models: ["external:openai:gpt-4o-mini", "internal:llama3-70b"]
+    applies_to:
+      regions: ["*"]
+      callers: ["*"]
