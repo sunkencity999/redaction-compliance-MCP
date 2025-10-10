@@ -563,7 +563,7 @@ A: ~100-200ms latency added for redaction/detokenization.
 A: Yes! Works with official OpenAI, Anthropic, and Google SDKs.
 
 **Q: Does it work with streaming?**  
-A: Not yet. Streaming support coming in v2.1.
+A: Yes! Full streaming support for OpenAI, Claude, and Gemini. Just set `stream=True` in your request.
 
 **Q: Can I proxy other providers (Cohere, etc.)?**  
 A: Not yet, but easy to add. Contact us or submit a PR!

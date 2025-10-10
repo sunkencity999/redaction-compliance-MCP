@@ -2,14 +2,105 @@
 Transparent Proxy Mode for LLM Providers
 Intercepts API calls to OpenAI, Claude, and Gemini
 Automatically redacts requests and detokenizes responses
+Supports both streaming and non-streaming responses
 """
 
 import httpx
 import json
 import time
-from typing import Dict, Any, List, Optional
+import re
+import asyncio
+from typing import Dict, Any, List, Optional, AsyncIterator
 from fastapi import Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
+
+
+class StreamingDetokenizer:
+    """
+    Handles real-time detokenization of streaming responses.
+    Buffers partial tokens across chunk boundaries.
+    """
+    
+    def __init__(self, token_handle: str, mcp_functions: Dict[str, Any]):
+        self.token_handle = token_handle
+        self.mcp = mcp_functions
+        self.buffer = ""
+        self.token_pattern = re.compile(r'«token:[A-Z_]+:[0-9a-f]{4}»')
+    
+    async def process_chunk(self, chunk_text: str) -> str:
+        """
+        Process a chunk of text, detokenizing complete tokens.
+        Buffers partial tokens for next chunk.
+        """
+        # Add chunk to buffer
+        self.buffer += chunk_text
+        
+        # Find all complete tokens in buffer
+        matches = list(self.token_pattern.finditer(self.buffer))
+        
+        if not matches:
+            # No complete tokens - check if we have a partial token at the end
+            if '«token:' in self.buffer:
+                # Might be partial token - keep in buffer
+                split_pos = self.buffer.rfind('«token:')
+                output = self.buffer[:split_pos]
+                self.buffer = self.buffer[split_pos:]
+                return output
+            else:
+                # No tokens at all - flush buffer
+                output = self.buffer
+                self.buffer = ""
+                return output
+        
+        # Process complete tokens
+        last_match_end = 0
+        output_parts = []
+        
+        for match in matches:
+            # Add text before token
+            output_parts.append(self.buffer[last_match_end:match.start()])
+            
+            # Detokenize the token
+            token = match.group(0)
+            detokenized = await self._detokenize_single_token(token)
+            output_parts.append(detokenized)
+            
+            last_match_end = match.end()
+        
+        # Keep any remaining text in buffer (might be partial token)
+        remainder = self.buffer[last_match_end:]
+        self.buffer = remainder if '«token:' in remainder else ""
+        
+        output = ''.join(output_parts)
+        if not self.buffer:
+            output += remainder
+        
+        return output
+    
+    async def flush(self) -> str:
+        """Flush any remaining buffer content."""
+        output = self.buffer
+        self.buffer = ""
+        return output
+    
+    async def _detokenize_single_token(self, token_placeholder: str) -> str:
+        """Detokenize a single token placeholder."""
+        from .models import DetokenizeRequest, Context
+        
+        try:
+            # Create minimal request for detokenization
+            req = DetokenizeRequest(
+                payload=token_placeholder,
+                token_map_handle=self.token_handle,
+                allow_categories=["pii", "ops_sensitive"],
+                context=Context(caller="streaming-proxy", region="us", env="prod")
+            )
+            
+            result = self.mcp["detokenize_internal"](req, skip_auth=True)
+            return result["restored_payload"]
+        except Exception:
+            # If detokenization fails, return original token
+            return token_placeholder
 
 
 class LLMProxy:
@@ -69,7 +160,7 @@ class OpenAIProxy(LLMProxy):
         return response_body
     
     async def forward_request(self, url: str, headers: Dict[str, str], body: Dict[str, Any]) -> Dict[str, Any]:
-        """Forward to OpenAI API."""
+        """Forward to OpenAI API (non-streaming)."""
         # Remove hop-by-hop headers
         clean_headers = {k: v for k, v in headers.items() 
                         if k.lower() not in ['host', 'content-length', 'connection']}
@@ -87,6 +178,87 @@ class OpenAIProxy(LLMProxy):
             )
         
         return response.json()
+    
+    async def stream_request(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        body: Dict[str, Any],
+        detokenizer: StreamingDetokenizer
+    ) -> AsyncIterator[str]:
+        """
+        Stream request to OpenAI and detokenize chunks in real-time.
+        Yields Server-Sent Events format.
+        """
+        clean_headers = {k: v for k, v in headers.items() 
+                        if k.lower() not in ['host', 'content-length', 'connection']}
+        
+        async with self.http_client.stream('POST', url, headers=clean_headers, json=body) as response:
+            if response.status_code != 200:
+                error_text = await response.aread()
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"OpenAI API error: {error_text.decode()}"
+                )
+            
+            # Process SSE stream
+            async for line in response.aiter_lines():
+                if not line:
+                    yield "\n"
+                    continue
+                
+                if line.startswith("data: "):
+                    data = line[6:]  # Remove "data: " prefix
+                    
+                    if data == "[DONE]":
+                        # Flush any remaining buffer
+                        remaining = await detokenizer.flush()
+                        if remaining:
+                            # Send remaining content as a chunk
+                            chunk_data = {
+                                "id": "mcp-flush",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": body.get("model", "gpt-4"),
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": remaining},
+                                    "finish_reason": None
+                                }]
+                            }
+                            yield f"data: {json.dumps(chunk_data)}\n\n"
+                        
+                        yield "data: [DONE]\n\n"
+                        break
+                    
+                    try:
+                        chunk = json.loads(data)
+                        
+                        # Extract content from delta
+                        if "choices" in chunk and len(chunk["choices"]) > 0:
+                            delta = chunk["choices"][0].get("delta", {})
+                            if "content" in delta:
+                                content = delta["content"]
+                                
+                                # Detokenize the content
+                                safe_content = await detokenizer.process_chunk(content)
+                                
+                                if safe_content:
+                                    # Update chunk with detokenized content
+                                    chunk["choices"][0]["delta"]["content"] = safe_content
+                                    yield f"data: {json.dumps(chunk)}\n\n"
+                            else:
+                                # No content, pass through
+                                yield f"{line}\n"
+                        else:
+                            # No choices, pass through
+                            yield f"{line}\n"
+                    except json.JSONDecodeError:
+                        # Invalid JSON, pass through
+                        yield f"{line}\n"
+                else:
+                    # Non-data line (comments, etc.)
+                    yield f"{line}\n"
 
 
 class ClaudeProxy(LLMProxy):
@@ -118,7 +290,7 @@ class ClaudeProxy(LLMProxy):
         return response_body
     
     async def forward_request(self, url: str, headers: Dict[str, str], body: Dict[str, Any]) -> Dict[str, Any]:
-        """Forward to Anthropic API."""
+        """Forward to Anthropic API (non-streaming)."""
         clean_headers = {k: v for k, v in headers.items() 
                         if k.lower() not in ['host', 'content-length', 'connection']}
         
@@ -135,6 +307,77 @@ class ClaudeProxy(LLMProxy):
             )
         
         return response.json()
+    
+    async def stream_request(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        body: Dict[str, Any],
+        detokenizer: StreamingDetokenizer
+    ) -> AsyncIterator[str]:
+        """
+        Stream request to Claude and detokenize chunks in real-time.
+        Yields Server-Sent Events format.
+        """
+        clean_headers = {k: v for k, v in headers.items() 
+                        if k.lower() not in ['host', 'content-length', 'connection']}
+        
+        async with self.http_client.stream('POST', url, headers=clean_headers, json=body) as response:
+            if response.status_code != 200:
+                error_text = await response.aread()
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Claude API error: {error_text.decode()}"
+                )
+            
+            # Process SSE stream (Claude format)
+            async for line in response.aiter_lines():
+                if not line:
+                    yield "\n"
+                    continue
+                
+                if line.startswith("event: ") or line.startswith("data: "):
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        
+                        try:
+                            chunk = json.loads(data)
+                            
+                            # Claude streams different event types
+                            if chunk.get("type") == "content_block_delta":
+                                delta = chunk.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    text = delta.get("text", "")
+                                    
+                                    # Detokenize the text
+                                    safe_text = await detokenizer.process_chunk(text)
+                                    
+                                    if safe_text:
+                                        chunk["delta"]["text"] = safe_text
+                                        yield f"data: {json.dumps(chunk)}\n\n"
+                                else:
+                                    yield f"{line}\n"
+                            elif chunk.get("type") == "message_stop":
+                                # Flush remaining buffer
+                                remaining = await detokenizer.flush()
+                                if remaining:
+                                    flush_chunk = {
+                                        "type": "content_block_delta",
+                                        "index": 0,
+                                        "delta": {"type": "text_delta", "text": remaining}
+                                    }
+                                    yield f"data: {json.dumps(flush_chunk)}\n\n"
+                                yield f"{line}\n"
+                            else:
+                                # Pass through other event types
+                                yield f"{line}\n"
+                        except json.JSONDecodeError:
+                            yield f"{line}\n"
+                    else:
+                        # Event type line
+                        yield f"{line}\n"
+                else:
+                    yield f"{line}\n"
 
 
 class GeminiProxy(LLMProxy):
@@ -175,7 +418,7 @@ class GeminiProxy(LLMProxy):
         return response_body
     
     async def forward_request(self, url: str, headers: Dict[str, str], body: Dict[str, Any]) -> Dict[str, Any]:
-        """Forward to Google Gemini API."""
+        """Forward to Google Gemini API (non-streaming)."""
         clean_headers = {k: v for k, v in headers.items() 
                         if k.lower() not in ['host', 'content-length', 'connection']}
         
@@ -192,6 +435,76 @@ class GeminiProxy(LLMProxy):
             )
         
         return response.json()
+    
+    async def stream_request(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        body: Dict[str, Any],
+        detokenizer: StreamingDetokenizer
+    ) -> AsyncIterator[str]:
+        """
+        Stream request to Gemini and detokenize chunks in real-time.
+        Gemini uses JSON streaming (newline-delimited JSON).
+        """
+        clean_headers = {k: v for k, v in headers.items() 
+                        if k.lower() not in ['host', 'content-length', 'connection']}
+        
+        async with self.http_client.stream('POST', url, headers=clean_headers, json=body) as response:
+            if response.status_code != 200:
+                error_text = await response.aread()
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Gemini API error: {error_text.decode()}"
+                )
+            
+            # Process JSON stream (newline-delimited)
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                
+                try:
+                    chunk = json.loads(line)
+                    
+                    # Extract text from Gemini response structure
+                    if "candidates" in chunk and len(chunk["candidates"]) > 0:
+                        candidate = chunk["candidates"][0]
+                        if "content" in candidate and "parts" in candidate["content"]:
+                            parts = candidate["content"]["parts"]
+                            if len(parts) > 0 and "text" in parts[0]:
+                                text = parts[0]["text"]
+                                
+                                # Detokenize the text
+                                safe_text = await detokenizer.process_chunk(text)
+                                
+                                if safe_text:
+                                    chunk["candidates"][0]["content"]["parts"][0]["text"] = safe_text
+                                    yield f"{json.dumps(chunk)}\n"
+                            else:
+                                yield f"{line}\n"
+                        else:
+                            yield f"{line}\n"
+                    else:
+                        # Check if this is a final chunk
+                        if "candidates" in chunk:
+                            # Flush remaining buffer
+                            remaining = await detokenizer.flush()
+                            if remaining:
+                                flush_chunk = {
+                                    "candidates": [{
+                                        "content": {
+                                            "parts": [{"text": remaining}],
+                                            "role": "model"
+                                        },
+                                        "finishReason": "STOP",
+                                        "index": 0
+                                    }]
+                                }
+                                yield f"{json.dumps(flush_chunk)}\n"
+                        yield f"{line}\n"
+                except json.JSONDecodeError:
+                    # Not valid JSON, pass through
+                    yield f"{line}\n"
 
 
 class TransparentProxyHandler:
@@ -210,6 +523,100 @@ class TransparentProxyHandler:
         self.claude = ClaudeProxy(mcp_functions)
         self.gemini = GeminiProxy(mcp_functions)
     
+    async def process_streaming_request(
+        self,
+        provider: str,
+        target_url: str,
+        headers: Dict[str, str],
+        body: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> AsyncIterator[str]:
+        """
+        Process streaming request through MCP pipeline:
+        1. Extract messages from provider format
+        2. Redact sensitive content
+        3. Stream from real provider
+        4. Detokenize chunks in real-time
+        5. Yield in original format
+        """
+        
+        # Select appropriate proxy
+        proxy = {
+            "openai": self.openai,
+            "claude": self.claude,
+            "gemini": self.gemini
+        }.get(provider)
+        
+        if not proxy:
+            raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+        
+        # Extract messages
+        messages = await proxy.extract_messages(body)
+        
+        # Redact each message
+        sanitized_messages = []
+        token_handles = []
+        
+        for msg in messages:
+            # Extract text content based on provider format
+            if provider == "gemini":
+                text_content = msg.get("parts", [{}])[0].get("text", "") if "parts" in msg else ""
+            else:
+                text_content = msg.get("content", "")
+            
+            if not text_content:
+                sanitized_messages.append(msg)
+                token_handles.append(None)
+                continue
+            
+            # Redact with MCP
+            try:
+                redact_result = await self._redact_text(text_content, context)
+                sanitized_text = redact_result["sanitized"]
+                token_handle = redact_result["handle"]
+                
+                # Update message with sanitized content
+                sanitized_msg = msg.copy()
+                if provider == "gemini":
+                    if "parts" in sanitized_msg:
+                        sanitized_msg["parts"][0]["text"] = sanitized_text
+                else:
+                    sanitized_msg["content"] = sanitized_text
+                
+                sanitized_messages.append(sanitized_msg)
+                token_handles.append(token_handle)
+                
+            except Exception as e:
+                # If blocked, return error immediately
+                if "blocked" in str(e).lower():
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Request blocked by security policy: contains sensitive content"
+                    )
+                raise
+        
+        # Inject sanitized messages into request
+        sanitized_body = await proxy.inject_messages(body, sanitized_messages)
+        
+        # Get active token handle for detokenization
+        active_handle = next((h for h in reversed(token_handles) if h), None)
+        
+        if not active_handle:
+            # No tokens to detokenize - just stream through
+            async for chunk in proxy.stream_request(target_url, headers, sanitized_body, None):
+                yield chunk
+            return
+        
+        # Create detokenizer and stream with detokenization
+        detokenizer = StreamingDetokenizer(active_handle, self.mcp)
+        
+        try:
+            async for chunk in proxy.stream_request(target_url, headers, sanitized_body, detokenizer):
+                yield chunk
+        except Exception as e:
+            print(f"Streaming error: {e}")
+            raise
+    
     async def process_request(
         self,
         provider: str,
@@ -219,7 +626,7 @@ class TransparentProxyHandler:
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Process request through MCP pipeline:
+        Process non-streaming request through MCP pipeline:
         1. Extract messages from provider format
         2. Redact sensitive content
         3. Forward to real provider

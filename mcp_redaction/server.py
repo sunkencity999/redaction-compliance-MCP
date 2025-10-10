@@ -270,6 +270,7 @@ async def proxy_openai_chat(request: Request):
     """
     OpenAI-compatible endpoint for transparent proxying.
     Automatically redacts requests and detokenizes responses.
+    Supports both streaming and non-streaming requests.
     
     Usage:
       export OPENAI_API_BASE=https://mcp.yourcompany.com/v1
@@ -285,6 +286,9 @@ async def proxy_openai_chat(request: Request):
     
     body = await request.json()
     headers = dict(request.headers)
+    
+    # Check if streaming is requested
+    is_streaming = body.get("stream", False)
     
     # Get upstream OpenAI URL
     upstream_url = os.getenv("OPENAI_UPSTREAM_URL", "https://api.openai.com/v1/chat/completions")
@@ -306,14 +310,28 @@ async def proxy_openai_chat(request: Request):
     })
     
     try:
-        result = await proxy_handler.process_request(
-            provider="openai",
-            target_url=upstream_url,
-            headers=headers,
-            body=body,
-            context=context
-        )
-        return JSONResponse(content=result)
+        if is_streaming:
+            # Return streaming response
+            return StreamingResponse(
+                proxy_handler.process_streaming_request(
+                    provider="openai",
+                    target_url=upstream_url,
+                    headers=headers,
+                    body=body,
+                    context=context
+                ),
+                media_type="text/event-stream"
+            )
+        else:
+            # Return normal JSON response
+            result = await proxy_handler.process_request(
+                provider="openai",
+                target_url=upstream_url,
+                headers=headers,
+                body=body,
+                context=context
+            )
+            return JSONResponse(content=result)
     except HTTPException:
         raise
     except Exception as e:
@@ -324,6 +342,7 @@ async def proxy_claude(request: Request):
     """
     Claude-compatible endpoint for transparent proxying.
     Automatically redacts requests and detokenizes responses.
+    Supports both streaming and non-streaming requests.
     
     Usage:
       export ANTHROPIC_API_URL=https://mcp.yourcompany.com/v1/messages
@@ -339,6 +358,9 @@ async def proxy_claude(request: Request):
     
     body = await request.json()
     headers = dict(request.headers)
+    
+    # Check if streaming is requested
+    is_streaming = body.get("stream", False)
     
     upstream_url = os.getenv("CLAUDE_UPSTREAM_URL", "https://api.anthropic.com/v1/messages")
     
@@ -358,14 +380,26 @@ async def proxy_claude(request: Request):
     })
     
     try:
-        result = await proxy_handler.process_request(
-            provider="claude",
-            target_url=upstream_url,
-            headers=headers,
-            body=body,
-            context=context
-        )
-        return JSONResponse(content=result)
+        if is_streaming:
+            return StreamingResponse(
+                proxy_handler.process_streaming_request(
+                    provider="claude",
+                    target_url=upstream_url,
+                    headers=headers,
+                    body=body,
+                    context=context
+                ),
+                media_type="text/event-stream"
+            )
+        else:
+            result = await proxy_handler.process_request(
+                provider="claude",
+                target_url=upstream_url,
+                headers=headers,
+                body=body,
+                context=context
+            )
+            return JSONResponse(content=result)
     except HTTPException:
         raise
     except Exception as e:
@@ -377,6 +411,7 @@ async def proxy_gemini(model: str, request: Request):
     """
     Gemini-compatible endpoint for transparent proxying.
     Automatically redacts requests and detokenizes responses.
+    Supports both streaming and non-streaming requests.
     
     Usage:
       Set base_url in genai.configure()
@@ -393,6 +428,9 @@ async def proxy_gemini(model: str, request: Request):
     body = await request.json()
     headers = dict(request.headers)
     
+    # Check if streaming is requested (Gemini uses generationConfig.stream)
+    is_streaming = body.get("generationConfig", {}).get("stream", False) or ":streamGenerateContent" in str(request.url)
+    
     # Determine if v1 or v1beta
     path_prefix = "v1beta" if "/v1beta/" in str(request.url) else "v1"
     
@@ -400,7 +438,8 @@ async def proxy_gemini(model: str, request: Request):
     api_key = request.query_params.get("key", "")
     
     upstream_base = os.getenv("GEMINI_UPSTREAM_URL", "https://generativelanguage.googleapis.com")
-    upstream_url = f"{upstream_base}/{path_prefix}/models/{model}:generateContent"
+    endpoint_suffix = ":streamGenerateContent" if is_streaming else ":generateContent"
+    upstream_url = f"{upstream_base}/{path_prefix}/models/{model}{endpoint_suffix}"
     if api_key:
         upstream_url += f"?key={api_key}"
     
@@ -420,14 +459,26 @@ async def proxy_gemini(model: str, request: Request):
     })
     
     try:
-        result = await proxy_handler.process_request(
-            provider="gemini",
-            target_url=upstream_url,
-            headers=headers,
-            body=body,
-            context=context
-        )
-        return JSONResponse(content=result)
+        if is_streaming:
+            return StreamingResponse(
+                proxy_handler.process_streaming_request(
+                    provider="gemini",
+                    target_url=upstream_url,
+                    headers=headers,
+                    body=body,
+                    context=context
+                ),
+                media_type="application/json"
+            )
+        else:
+            result = await proxy_handler.process_request(
+                provider="gemini",
+                target_url=upstream_url,
+                headers=headers,
+                body=body,
+                context=context
+            )
+            return JSONResponse(content=result)
     except HTTPException:
         raise
     except Exception as e:
