@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Client - Basic Browser Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 900px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            margin: 10px 0;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .output {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+            border-radius: 4px;
+        }
+        .error {
+            border-left-color: #dc3545;
+            color: #721c24;
+            background: #f8d7da;
+        }
+        .success {
+            border-left-color: #28a745;
+            color: #155724;
+            background: #d4edda;
+        }
+        .code {
+            font-family: monospace;
+            background: #eee;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .label {
+            font-weight: bold;
+            margin-top: 15px;
+            display: block;
+        }
+        .info {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛡️ MCP Redaction Client - Browser Demo</h1>
+        <p class="info">Test the MCP Redaction Server from your browser. Try entering sensitive data like AWS keys, credit cards, or passwords.</p>
+
+        <label class="label">Server URL:</label>
+        <input type="text" id="serverUrl" value="https://mcp.yourcompany.com" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+
+        <label class="label">Test Input (try adding an AWS key):</label>
+        <textarea id="userInput" placeholder="Enter text to test... e.g., 'My AWS key is AKIAIOSFODNN7EXAMPLE'">My AWS key is AKIAIOSFODNN7EXAMPLE, can you help me debug this error?</textarea>
+
+        <button onclick="testClassify()">1. Classify</button>
+        <button onclick="testRedact()">2. Redact</button>
+        <button onclick="testSafeLLMCall()">3. Safe LLM Call (Simulated)</button>
+        <button onclick="testHealth()">Check Health</button>
+
+        <div id="output"></div>
+    </div>
+
+    <!-- Load MCP Client SDK -->
+    <script src="../mcp-client.js"></script>
+
+    <script>
+        let mcpClient;
+        let currentTokenHandle;
+
+        // Initialize client
+        function initClient() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            mcpClient = new MCPClient({
+                serverUrl: serverUrl,
+                caller: 'browser-demo',
+                region: 'us'
+            });
+            return mcpClient;
+        }
+
+        function showOutput(title, content, type = 'output') {
+            const outputDiv = document.getElementById('output');
+            outputDiv.className = type;
+            outputDiv.innerHTML = `<strong>${title}</strong><pre>${content}</pre>`;
+        }
+
+        async function testClassify() {
+            try {
+                const client = initClient();
+                const input = document.getElementById('userInput').value;
+                
+                showOutput('🔍 Classifying...', 'Please wait...');
+                
+                const result = await client.classify(input);
+                
+                const output = JSON.stringify(result, null, 2);
+                showOutput('✅ Classification Result', output, 'output success');
+            } catch (error) {
+                showOutput('❌ Error', error.message, 'output error');
+            }
+        }
+
+        async function testRedact() {
+            try {
+                const client = initClient();
+                const input = document.getElementById('userInput').value;
+                
+                showOutput('🔒 Redacting...', 'Please wait...');
+                
+                const result = await client.redact(input);
+                currentTokenHandle = result.tokenHandle;
+                
+                const output = `Sanitized Text:\n${result.sanitized}\n\nToken Handle: ${result.tokenHandle}`;
+                showOutput('✅ Redaction Result', output, 'output success');
+            } catch (error) {
+                if (error instanceof MCPBlockedError) {
+                    showOutput('🚫 Blocked by Policy', `Request was blocked:\n${error.message}\n\nDecision: ${JSON.stringify(error.decision, null, 2)}`, 'output error');
+                } else {
+                    showOutput('❌ Error', error.message, 'output error');
+                }
+            }
+        }
+
+        async function testSafeLLMCall() {
+            try {
+                const client = initClient();
+                const input = document.getElementById('userInput').value;
+                
+                showOutput('🤖 Calling LLM (simulated)...', 'Please wait...');
+                
+                // Simulate LLM function (replace with real OpenAI/Claude call)
+                const simulatedLLM = async (sanitizedInput) => {
+                    // In a real app, you'd call OpenAI/Claude here
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate delay
+                    return `I understand you're working with: ${sanitizedInput}. Here's my response...`;
+                };
+                
+                const result = await client.safeLLMCall(input, simulatedLLM);
+                
+                showOutput('✅ Safe LLM Response', result, 'output success');
+            } catch (error) {
+                if (error instanceof MCPBlockedError) {
+                    showOutput('🚫 Blocked by Policy', error.message, 'output error');
+                } else {
+                    showOutput('❌ Error', error.message, 'output error');
+                }
+            }
+        }
+
+        async function testHealth() {
+            try {
+                const client = initClient();
+                
+                showOutput('💓 Checking health...', 'Please wait...');
+                
+                const result = await client.health();
+                
+                const output = JSON.stringify(result, null, 2);
+                showOutput('✅ Server Healthy', output, 'output success');
+            } catch (error) {
+                showOutput('❌ Health Check Failed', error.message, 'output error');
+            }
+        }
+    </script>
+</body>
+</html>

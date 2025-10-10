@@ -71,9 +71,11 @@ sudo ./install.sh
 
 ---
 
-## 📦 Python Client SDK
+## 📦 Client SDKs
 
-**Seamless integration with your applications:**
+### Python SDK
+
+**Seamless integration for Python/backend applications:**
 
 ```bash
 # Install SDK (included in automated installer)
@@ -125,6 +127,66 @@ response = mcp.safe_llm_call(
 ```
 
 **Examples:** See `examples/` directory after installation
+
+---
+
+### JavaScript/Browser SDK
+
+**For web applications, React, Vue, Angular:**
+
+```html
+<!-- Include SDK -->
+<script src="mcp_client_js/mcp-client.js"></script>
+
+<script>
+// Initialize client
+const mcp = new MCPClient({
+    serverUrl: 'https://mcp.yourcompany.com',
+    caller: 'web-app'
+});
+
+// Protect browser-based LLM calls
+async function safeChatCompletion(userInput) {
+    const response = await mcp.safeLLMCall(
+        userInput,
+        async (sanitized) => {
+            // Call OpenAI/Claude from browser
+            return await callYourLLM(sanitized);
+        }
+    );
+    return response;
+}
+</script>
+```
+
+**React Example:**
+
+```jsx
+import { MCPClient } from './mcp-client.js';
+
+const mcp = new MCPClient({
+    serverUrl: process.env.REACT_APP_MCP_SERVER,
+    caller: 'react-app'
+});
+
+function ChatComponent() {
+    const handleSubmit = async (input) => {
+        try {
+            const response = await mcp.safeLLMCall(input, callOpenAI);
+            setMessages(prev => [...prev, response]);
+        } catch (error) {
+            if (error instanceof MCPBlockedError) {
+                alert('Request blocked: contains sensitive data');
+            }
+        }
+    };
+    // ... rest of component
+}
+```
+
+**TypeScript supported:** See `mcp_client_js/mcp-client.d.ts`
+
+**Examples:** See `mcp_client_js/examples/` for browser and React demos
 
 ---
 

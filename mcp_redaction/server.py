@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import Any, Dict, List, Tuple
 from .models import *
@@ -68,6 +69,20 @@ def create_siem_shipper():
     return shipper
 
 app = FastAPI(title=settings.app_name)
+
+# Configure CORS for browser-based applications
+# Customize allowed_origins in production to restrict to your domains
+allowed_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,  # In production: ["https://yourapp.com"]
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    expose_headers=["Content-Type"],
+    max_age=3600,
+)
+
 audit = AuditLogger(settings.audit_path, siem_shipper=create_siem_shipper())
 tokens = create_token_store(backend=settings.token_backend, redis_url=settings.redis_url)
 policy = PolicyEngine(settings.policy_path)

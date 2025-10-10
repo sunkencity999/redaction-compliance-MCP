@@ -1,0 +1,34 @@
+{
+  "name": "@your-org/mcp-redaction-client",
+  "version": "2.0.0",
+  "description": "JavaScript/TypeScript client SDK for MCP Redaction & Compliance Server",
+  "main": "mcp-client.js",
+  "types": "mcp-client.d.ts",
+  "scripts": {
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "mcp",
+    "redaction",
+    "security",
+    "compliance",
+    "llm",
+    "pii",
+    "secrets"
+  ],
+  "author": "Your Organization",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sunkencity999/redaction-compliance-MCP.git"
+  },
+  "files": [
+    "mcp-client.js",
+    "mcp-client.d.ts",
+    "README.md"
+  ],
+  "browser": "mcp-client.js",
+  "dependencies": {},
+  "devDependencies": {},
+  "peerDependencies": {}
+}
