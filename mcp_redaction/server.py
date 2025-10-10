@@ -201,3 +201,27 @@ def route(req: RouteRequest):
 @app.post("/audit/query")
 def audit_query(req: AuditQueryRequest):
     return JSONResponse(content={"records": audit.query(req.q, req.limit)})
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for monitoring and installation verification."""
+    try:
+        # Check Redis connection if using Redis backend
+        if settings.token_backend == "redis":
+            tokens.redis.ping()
+        
+        return JSONResponse(content={
+            "status": "healthy",
+            "version": "2.0.0",
+            "token_backend": settings.token_backend,
+            "policy_version": policy.policy.get("version", 1),
+            "siem_enabled": bool(audit.siem_shipper)
+        })
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "error": str(e)
+            }
+        )
