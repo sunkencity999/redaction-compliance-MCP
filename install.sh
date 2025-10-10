@@ -441,18 +441,197 @@ EOF
     log_info "Log rotation configured (90 days for audit, 30 days for service logs)"
 }
 
+setup_nginx_proxy() {
+    echo -e "\n${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║  NGINX Reverse Proxy Setup (Recommended for Production)       ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}\n"
+    
+    read -p "Setup NGINX reverse proxy with HTTPS? (recommended) (Y/n): " setup_nginx
+    if [[ $setup_nginx =~ ^[Nn]$ ]]; then
+        log_info "Skipping NGINX setup"
+        save_state "NGINX_SETUP" "skipped"
+        return 0
+    fi
+    
+    log_info "Installing NGINX..."
+    if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
+        apt-get install -y nginx certbot python3-certbot-nginx
+    elif [[ "$OS" == "rhel" ]] || [[ "$OS" == "centos" ]] || [[ "$OS" == "rocky" ]]; then
+        yum install -y nginx certbot python3-certbot-nginx
+    fi
+    
+    read -p "Enter your server's public hostname (e.g., mcp.company.com): " SERVER_HOSTNAME
+    save_state "SERVER_HOSTNAME" "$SERVER_HOSTNAME"
+    
+    echo
+    echo "SSL Certificate Options:"
+    echo "1) Let's Encrypt (free, auto-renewing, requires public DNS)"
+    echo "2) Self-signed (for internal/testing)"
+    echo "3) Skip SSL setup (I'll configure manually)"
+    read -p "Choice [1-3]: " ssl_choice
+    
+    # Create NGINX config
+    log_info "Creating NGINX configuration..."
+    cat > "/etc/nginx/sites-available/mcp-redaction" <<EOF
+# MCP Redaction Server - NGINX Reverse Proxy
+upstream mcp_backend {
+    server 127.0.0.1:8019;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name ${SERVER_HOSTNAME};
+    
+    # Redirect to HTTPS
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${SERVER_HOSTNAME};
+    
+    # SSL certificates (will be configured based on choice)
+    ssl_certificate /etc/nginx/ssl/${SERVER_HOSTNAME}.crt;
+    ssl_certificate_key /etc/nginx/ssl/${SERVER_HOSTNAME}.key;
+    
+    # SSL security settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    
+    # Proxy settings
+    location / {
+        proxy_pass http://mcp_backend;
+        proxy_http_version 1.1;
+        
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Connection "";
+        
+        # Timeouts
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        
+        # Buffer settings
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 4k;
+    }
+    
+    # Health check endpoint (no auth)
+    location /health {
+        proxy_pass http://mcp_backend;
+        access_log off;
+    }
+    
+    # Access log
+    access_log /var/log/nginx/mcp-access.log;
+    error_log /var/log/nginx/mcp-error.log;
+}
+EOF
+    
+    # Enable site
+    if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
+        ln -sf /etc/nginx/sites-available/mcp-redaction /etc/nginx/sites-enabled/
+        rm -f /etc/nginx/sites-enabled/default
+    fi
+    
+    # Setup SSL based on choice
+    case $ssl_choice in
+        1)
+            log_info "Setting up Let's Encrypt certificate..."
+            mkdir -p /etc/nginx/ssl
+            
+            # Temporary HTTP server for ACME challenge
+            sed -i 's/return 301/#return 301/' /etc/nginx/sites-available/mcp-redaction
+            systemctl reload nginx
+            
+            if certbot --nginx -d "$SERVER_HOSTNAME" --non-interactive --agree-tos --email admin@"$SERVER_HOSTNAME" --redirect; then
+                log_info "Let's Encrypt certificate installed successfully"
+                # Certbot handles the SSL config
+            else
+                log_warn "Let's Encrypt failed. Falling back to self-signed certificate."
+                setup_self_signed_cert
+            fi
+            ;;
+        2)
+            setup_self_signed_cert
+            ;;
+        3)
+            log_warn "SSL setup skipped. Configure /etc/nginx/sites-available/mcp-redaction manually."
+            setup_self_signed_cert  # Still create self-signed for testing
+            ;;
+    esac
+    
+    # Test NGINX config
+    if nginx -t; then
+        systemctl enable nginx
+        systemctl restart nginx
+        log_info "NGINX configured and started successfully"
+    else
+        log_error "NGINX configuration test failed"
+        return 1
+    fi
+    
+    save_state "NGINX_SETUP" "complete"
+}
+
+setup_self_signed_cert() {
+    log_info "Generating self-signed certificate..."
+    mkdir -p /etc/nginx/ssl
+    
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "/etc/nginx/ssl/${SERVER_HOSTNAME}.key" \
+        -out "/etc/nginx/ssl/${SERVER_HOSTNAME}.crt" \
+        -subj "/C=US/ST=State/L=City/O=Organization/CN=${SERVER_HOSTNAME}" \
+        2>/dev/null
+    
+    log_info "Self-signed certificate created (valid for 365 days)"
+    log_warn "⚠ Self-signed certificates should only be used for testing!"
+}
+
 configure_firewall() {
     log_info "Configuring firewall..."
     
-    if command -v ufw &> /dev/null; then
-        ufw allow 8019/tcp comment 'MCP Redaction Server'
-        log_info "UFW firewall rule added for port 8019"
-    elif command -v firewall-cmd &> /dev/null; then
-        firewall-cmd --permanent --add-port=8019/tcp
-        firewall-cmd --reload
-        log_info "firewalld rule added for port 8019"
+    if [ "$NGINX_SETUP" == "complete" ] || [ "$NGINX_SETUP" == "skipped" ]; then
+        # Open HTTPS if NGINX is setup
+        if [ "$NGINX_SETUP" == "complete" ]; then
+            if command -v ufw &> /dev/null; then
+                ufw allow 443/tcp comment 'HTTPS for MCP'
+                ufw allow 80/tcp comment 'HTTP redirect'
+                # Don't expose 8019 directly
+                log_info "UFW: Opened ports 80, 443 (NGINX)"
+            elif command -v firewall-cmd &> /dev/null; then
+                firewall-cmd --permanent --add-service=https
+                firewall-cmd --permanent --add-service=http
+                firewall-cmd --reload
+                log_info "firewalld: Opened ports 80, 443"
+            fi
+        else
+            # No NGINX, open 8019
+            if command -v ufw &> /dev/null; then
+                ufw allow 8019/tcp comment 'MCP Redaction Server'
+                log_info "UFW firewall rule added for port 8019"
+            elif command -v firewall-cmd &> /dev/null; then
+                firewall-cmd --permanent --add-port=8019/tcp
+                firewall-cmd --reload
+                log_info "firewalld rule added for port 8019"
+            fi
+        fi
     else
-        log_warn "No firewall detected. Manually open port 8019 if needed."
+        log_warn "No firewall detected. Manually configure firewall rules."
     fi
 }
 
@@ -509,6 +688,219 @@ health_check() {
     return 1
 }
 
+install_client_sdk() {
+    echo -e "\n${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║  Python Client SDK Installation                                ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}\n"
+    
+    log_info "Installing MCP Client SDK..."
+    
+    cd "$INSTALL_DIR"
+    sudo -u "$SERVICE_USER" .venv/bin/pip install -e . --quiet
+    
+    log_info "Client SDK installed successfully"
+}
+
+create_integration_examples() {
+    log_info "Creating integration examples..."
+    
+    local examples_dir="$INSTALL_DIR/examples"
+    mkdir -p "$examples_dir"
+    
+    # Example 1: Basic usage
+    cat > "$examples_dir/basic_example.py" <<'EOF'
+#!/usr/bin/env python3
+"""
+Basic MCP Client Example
+Demonstrates simple redact/detokenize workflow
+"""
+
+from mcp_client import MCPClient, MCPConfig
+
+# Configure client
+config = MCPConfig(
+    server_url="https://mcp.yourcompany.com",  # Or http://localhost:8019 for testing
+    caller="my-app",
+    region="us"
+)
+
+mcp = MCPClient(config)
+
+# Example user input (contains AWS key)
+user_input = "My AWS key is AKIAIOSFODNN7EXAMPLE, can you help me debug this error?"
+
+print("Original input:")
+print(user_input)
+print()
+
+# Step 1: Redact sensitive data
+try:
+    sanitized, token_handle = mcp.redact(user_input)
+    print("Sanitized (safe for LLM):")
+    print(sanitized)
+    print()
+    
+    # Step 2: Send sanitized version to LLM
+    # llm_response = call_your_llm(sanitized)
+    # For this example, simulate an LLM response
+    llm_response = f"Based on your request about {sanitized}, here's what I found..."
+    
+    print("LLM Response:")
+    print(llm_response)
+    print()
+    
+    # Step 3: Detokenize (restore non-secrets)
+    final_response = mcp.detokenize(
+        llm_response,
+        token_handle,
+        allow_categories=["pii", "ops_sensitive"]  # NOT secrets!
+    )
+    
+    print("Final response (detokenized):")
+    print(final_response)
+    
+except Exception as e:
+    print(f"Error: {e}")
+EOF
+    
+    # Example 2: OpenAI integration
+    cat > "$examples_dir/openai_integration.py" <<'EOF'
+#!/usr/bin/env python3
+"""
+OpenAI Integration Example
+Shows how to integrate MCP with OpenAI API
+"""
+
+from mcp_client import MCPClient, MCPConfig, MCPBlockedError
+import os
+
+# Requires: pip install openai
+try:
+    import openai
+except ImportError:
+    print("Please install openai: pip install openai")
+    exit(1)
+
+# Configure OpenAI
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# Configure MCP
+mcp = MCPClient(MCPConfig(
+    server_url=os.getenv("MCP_SERVER_URL", "https://mcp.yourcompany.com"),
+    caller="openai-wrapper",
+    region="us"
+))
+
+def safe_chat_completion(user_message: str, model="gpt-4") -> str:
+    """
+    Safely call OpenAI with automatic redaction/detokenization.
+    """
+    try:
+        # Step 1: Redact with MCP
+        sanitized, token_handle = mcp.redact(user_message)
+        
+        # Step 2: Call OpenAI with sanitized input
+        response = openai.ChatCompletion.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": sanitized}
+            ]
+        )
+        
+        llm_output = response.choices[0].message.content
+        
+        # Step 3: Detokenize response
+        final = mcp.detokenize(llm_output, token_handle)
+        
+        return final
+        
+    except MCPBlockedError as e:
+        return f"❌ Request blocked by security policy: {e}"
+    except Exception as e:
+        return f"❌ Error: {e}"
+
+# Example usage
+if __name__ == "__main__":
+    test_input = "My AWS key is AKIAIOSFODNN7EXAMPLE. Can you help me troubleshoot?"
+    
+    print("User input:", test_input)
+    print()
+    
+    result = safe_chat_completion(test_input)
+    print("Safe response:", result)
+EOF
+    
+    # Example 3: Helper wrapper function
+    cat > "$examples_dir/safe_llm_wrapper.py" <<'EOF'
+#!/usr/bin/env python3
+"""
+Convenience Wrapper for Any LLM
+Drop-in replacement that adds MCP protection
+"""
+
+from mcp_client import MCPClient, MCPConfig
+import os
+
+# Global MCP client
+_mcp_client = None
+
+def get_mcp_client():
+    """Get or create MCP client singleton."""
+    global _mcp_client
+    if _mcp_client is None:
+        _mcp_client = MCPClient(MCPConfig.from_env())
+    return _mcp_client
+
+def safe_llm_call(user_input: str, llm_function, **kwargs) -> str:
+    """
+    Wrapper that adds MCP protection to any LLM call.
+    
+    Args:
+        user_input: User's message (may contain sensitive data)
+        llm_function: Your LLM function that takes a string and returns a string
+        **kwargs: Additional arguments to pass to llm_function
+    
+    Returns:
+        Safe, detokenized response
+    
+    Example:
+        def my_llm(text):
+            return openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": text}]
+            ).choices[0].message.content
+        
+        response = safe_llm_call("Help me with AKIAIOSFODNN...", my_llm)
+    """
+    mcp = get_mcp_client()
+    
+    # Use the built-in safe_llm_call method
+    return mcp.safe_llm_call(
+        user_input,
+        llm_function,
+        **kwargs
+    )
+
+# Example usage
+if __name__ == "__main__":
+    # Your existing LLM function
+    def my_llm(text):
+        # Simulate LLM response
+        return f"I received: {text}"
+    
+    # Just wrap it!
+    user_input = "My password is SuperSecret123, help me debug"
+    safe_response = safe_llm_call(user_input, my_llm)
+    print(safe_response)
+EOF
+    
+    chmod +x "$examples_dir"/*.py
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$examples_dir"
+    
+    log_info "Integration examples created in $examples_dir"
+}
+
 print_success() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║                                                                ║${NC}"
@@ -519,8 +911,16 @@ print_success() {
     echo -e "${BLUE}Service Status:${NC}"
     systemctl status "$SERVICE_NAME" --no-pager | head -10
     
-    echo -e "\n${BLUE}Quick Reference:${NC}"
-    echo "  Service URL:     http://$(hostname):8019"
+    echo -e "\n${BLUE}API Access:${NC}"
+    if [ "$NGINX_SETUP" == "complete" ]; then
+        echo "  Public URL:      https://${SERVER_HOSTNAME}"
+        echo "  Health check:    curl https://${SERVER_HOSTNAME}/health"
+    else
+        echo "  Local URL:       http://localhost:8019"
+        echo "  Health check:    curl http://localhost:8019/health"
+    fi
+    
+    echo -e "\n${BLUE}System Management:${NC}"
     echo "  Service status:  systemctl status $SERVICE_NAME"
     echo "  View logs:       journalctl -u $SERVICE_NAME -f"
     echo "  Audit logs:      tail -f $INSTALL_DIR/audit/audit.jsonl"
@@ -533,17 +933,47 @@ print_success() {
         echo "  Status:   Check SIEM platform for incoming logs"
     fi
     
+    echo -e "\n${BLUE}Client SDK Integration:${NC}"
+    echo "  Python SDK:      Installed in $INSTALL_DIR/.venv"
+    echo "  Examples:        $INSTALL_DIR/examples/"
+    echo "    • basic_example.py        - Simple redact/detokenize"
+    echo "    • openai_integration.py   - OpenAI wrapper"
+    echo "    • safe_llm_wrapper.py     - Drop-in LLM protection"
+    echo ""
+    echo "  Test SDK:        cd $INSTALL_DIR && .venv/bin/python examples/basic_example.py"
+    
+    echo -e "\n${BLUE}Application Integration (Quick Start):${NC}"
+    cat <<'INTEGRATION'
+  
+  # In your application code:
+  from mcp_client import MCPClient, MCPConfig
+  
+  mcp = MCPClient(MCPConfig(
+      server_url="https://YOUR-HOSTNAME",
+      caller="your-app-name"
+  ))
+  
+  # Before calling LLM:
+  sanitized, handle = mcp.redact(user_input)
+  llm_response = call_your_llm(sanitized)
+  final = mcp.detokenize(llm_response, handle)
+  
+  # See examples/ directory for complete code
+INTEGRATION
+    
     echo -e "\n${BLUE}Next Steps:${NC}"
-    echo "  1. Test the API:  curl http://localhost:8019/health"
-    echo "  2. Run demo:      cd $INSTALL_DIR && python3 mcp_redaction/demo_client.py"
-    echo "  3. Review docs:   cat $INSTALL_DIR/README.md"
-    echo "  4. Configure TLS: Setup reverse proxy (NGINX/HAProxy) with certificates"
+    echo "  1. Test API:      curl $([ "$NGINX_SETUP" == "complete" ] && echo "https://${SERVER_HOSTNAME}" || echo "http://localhost:8019")/health"
+    echo "  2. Run examples:  cd $INSTALL_DIR/examples && .venv/bin/python basic_example.py"
+    echo "  3. Integrate app: Copy mcp_client SDK to your application"
+    echo "  4. Monitor SIEM:  Check $SIEM_TYPE for audit logs"
     
     echo -e "\n${RED}⚠ IMPORTANT SECURITY NOTES:${NC}"
     echo "  • Backup secrets file: $SECRETS_FILE"
-    echo "  • Setup TLS/HTTPS before production use"
-    echo "  • Configure mTLS for client authentication"
-    echo "  • Review and customize policy: $INSTALL_DIR/mcp_redaction/sample_policies/default.yaml"
+    if [ "$NGINX_SETUP" != "complete" ]; then
+        echo "  • ⚠ HTTPS not configured - DO NOT use in production without TLS!"
+    fi
+    echo "  • Add trusted callers to: $INSTALL_DIR/mcp_redaction/sample_policies/default.yaml"
+    echo "  • Review and customize policy before production use"
     echo ""
 }
 
@@ -651,6 +1081,14 @@ install_full() {
     create_env_file
     create_systemd_service
     setup_logrotate
+    
+    # Setup NGINX proxy (optional but recommended)
+    if [ "$NGINX_SETUP" != "complete" ] && [ "$NGINX_SETUP" != "skipped" ]; then
+        setup_nginx_proxy
+    else
+        log_info "Using existing NGINX configuration"
+    fi
+    
     configure_firewall
     
     echo
@@ -661,6 +1099,10 @@ install_full() {
     
     start_service
     health_check
+    
+    # Install client SDK and create examples
+    install_client_sdk
+    create_integration_examples
     
     # Cleanup state file on success
     rm -f "$STATE_FILE"

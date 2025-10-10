@@ -1,6 +1,13 @@
 # Production Deployment Guide
 
-Complete guide for deploying MCP Redaction Server to a Linux production server using the automated installer.
+Complete guide for deploying MCP Redaction Server to a Linux production server using the **automated installer with Direct API integration**.
+
+**Key Features:**
+- 🚀 Automated NGINX reverse proxy with HTTPS (Let's Encrypt or self-signed)
+- 📦 Python Client SDK included
+- 🔗 Seamless Direct API integration examples
+- ⚡ 5-minute installation
+- 🔄 Resumable if interrupted
 
 ---
 
@@ -248,19 +255,101 @@ tests/test_detectors.py::TestCredentialDetection::test_azure_credentials PASSED
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
 
-Service Status:
-● mcp-redaction.service - MCP Redaction & Compliance Server
-   Loaded: loaded (/etc/systemd/system/mcp-redaction.service; enabled)
-   Active: active (running)
+API Access:
+  Public URL:      https://mcp.yourcompany.com
+  Health check:    curl https://mcp.yourcompany.com/health
 
-Quick Reference:
-  Service URL:     http://your-server:8019
+System Management:
   Service status:  systemctl status mcp-redaction
   View logs:       journalctl -u mcp-redaction -f
   Audit logs:      tail -f /opt/mcp-redaction/audit/audit.jsonl
-  Config file:     /opt/mcp-redaction/.env
-  Secrets file:    /root/.mcp-secrets
+
+Client SDK Integration:
+  Python SDK:      Installed in /opt/mcp-redaction/.venv
+  Examples:        /opt/mcp-redaction/examples/
+    • basic_example.py        - Simple redact/detokenize
+    • openai_integration.py   - OpenAI wrapper
+    • safe_llm_wrapper.py     - Drop-in LLM protection
 ```
+
+---
+
+## 📦 Using the Python Client SDK
+
+The installer automatically includes the Python Client SDK for seamless application integration.
+
+### Quick Start
+
+```python
+from mcp_client import MCPClient, MCPConfig
+
+# Configure client
+mcp = MCPClient(MCPConfig(
+    server_url="https://mcp.yourcompany.com",
+    caller="your-app-name",
+    region="us"
+))
+
+# Protect user input before sending to LLM
+user_input = "My AWS key is AKIAIOSFODNN7EXAMPLE, help debug"
+
+try:
+    # Step 1: Redact sensitive data
+    sanitized, token_handle = mcp.redact(user_input)
+    # Result: "My AWS key is «token:SECRET:a3f9», help debug"
+    
+    # Step 2: Send sanitized version to your LLM
+    llm_response = your_llm_function(sanitized)
+    
+    # Step 3: Restore non-secret tokens
+    final = mcp.detokenize(llm_response, token_handle)
+    
+    return final
+
+except MCPBlockedError as e:
+    # Request was blocked by policy
+    print(f"Blocked: {e}")
+```
+
+### Examples Included
+
+After installation, find ready-to-run examples in `/opt/mcp-redaction/examples/`:
+
+```bash
+# Test basic functionality
+cd /opt/mcp-redaction
+.venv/bin/python examples/basic_example.py
+
+# Test with OpenAI (requires OPENAI_API_KEY)
+export OPENAI_API_KEY="your-key"
+.venv/bin/python examples/openai_integration.py
+
+# Use wrapper function
+.venv/bin/python examples/safe_llm_wrapper.py
+```
+
+### Install SDK in Your Application
+
+```bash
+# Option 1: Install from server directory
+pip install /opt/mcp-redaction
+
+# Option 2: Copy SDK to your project
+cp -r /opt/mcp-redaction/mcp_client /path/to/your/project/
+```
+
+### Environment Variables
+
+Configure SDK via environment:
+
+```bash
+export MCP_SERVER_URL="https://mcp.yourcompany.com"
+export MCP_CALLER="your-app-name"
+export MCP_REGION="us"
+export MCP_ENV="prod"
+```
+
+Then use `MCPConfig.from_env()` in your code.
 
 ---
 
