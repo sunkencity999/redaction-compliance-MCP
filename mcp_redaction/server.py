@@ -300,7 +300,9 @@ async def proxy_openai_chat(request: Request):
         "caller": caller,
         "region": headers.get("x-mcp-region", "us"),
         "env": headers.get("x-mcp-env", "prod"),
-        "conversation_id": headers.get("x-mcp-conversation-id", f"openai-{time.time()}")
+        "conversation_id": headers.get("x-mcp-conversation-id", f"openai-{time.time()}"),
+        "provider": "openai",
+        "domain": headers.get("x-mcp-domain", "general")
     }
     
     proxy_handler = TransparentProxyHandler({
@@ -370,7 +372,9 @@ async def proxy_claude(request: Request):
         "caller": caller,
         "region": headers.get("x-mcp-region", "us"),
         "env": headers.get("x-mcp-env", "prod"),
-        "conversation_id": headers.get("x-mcp-conversation-id", f"claude-{time.time()}")
+        "conversation_id": headers.get("x-mcp-conversation-id", f"claude-{time.time()}"),
+        "provider": "claude",
+        "domain": headers.get("x-mcp-domain", "general")
     }
     
     proxy_handler = TransparentProxyHandler({
@@ -449,7 +453,9 @@ async def proxy_gemini(model: str, request: Request):
         "caller": caller,
         "region": headers.get("x-mcp-region", "us"),
         "env": headers.get("x-mcp-env", "prod"),
-        "conversation_id": headers.get("x-mcp-conversation-id", f"gemini-{time.time()}")
+        "conversation_id": headers.get("x-mcp-conversation-id", f"gemini-{time.time()}"),
+        "provider": "gemini",
+        "domain": headers.get("x-mcp-domain", "general")
     }
     
     proxy_handler = TransparentProxyHandler({

@@ -699,20 +699,32 @@ class TransparentProxyHandler:
         response_text = await proxy.extract_response_text(llm_response)
         
         # Detokenize if we have token handles
+        detokenized_text = response_text
         if response_text and any(token_handles):
             # Use the last valid token handle (usually the user's message)
             active_handle = next((h for h in reversed(token_handles) if h), None)
             if active_handle:
                 try:
-                    detokenized = await self._detokenize_text(
+                    detokenized_text = await self._detokenize_text(
                         response_text,
                         active_handle,
                         context
                     )
-                    llm_response = await proxy.inject_response_text(llm_response, detokenized)
+                    llm_response = await proxy.inject_response_text(llm_response, detokenized_text)
                 except Exception as e:
                     # Log but don't fail on detokenization errors
                     print(f"Detokenization warning: {e}")
+        
+        # Claim verification (if enabled)
+        verification_result = await self._verify_claims_if_enabled(
+            detokenized_text or response_text,
+            context,
+            llm_response
+        )
+        
+        # Add verification metadata to response
+        if verification_result:
+            llm_response["mcp_verification"] = verification_result.to_dict()
         
         return llm_response
     
@@ -765,3 +777,70 @@ class TransparentProxyHandler:
         # Use skip_auth=True for proxy (already authenticated by proxy endpoint)
         result = self.mcp["detokenize_internal"](req, skip_auth=True)
         return result["restored_payload"]
+    
+    async def _verify_claims_if_enabled(
+        self,
+        response_text: str,
+        context: Dict[str, Any],
+        llm_response: Dict[str, Any]
+    ) -> Optional[Any]:
+        """
+        Verify claims in response if verification is enabled.
+        Adds inline warnings and metadata but never blocks responses.
+        """
+        import os
+        
+        # Check if claim verification is enabled
+        if os.getenv("CLAIM_VERIFICATION_ENABLED", "false").lower() != "true":
+            return None
+        
+        if not response_text or not response_text.strip():
+            return None
+        
+        try:
+            from .claim_verification import ClaimVerifier, annotate_response_with_warnings
+            
+            # Get verification LLM configuration
+            verification_config = {
+                "model": os.getenv("CLAIM_VERIFICATION_MODEL", "gpt-4o-mini"),
+                "api_key": os.getenv("OPENAI_API_KEY", ""),
+                "base_url": os.getenv("OPENAI_UPSTREAM_URL", "https://api.openai.com/v1").replace("/chat/completions", "")
+            }
+            
+            # Create verifier with shared HTTP client
+            verifier = ClaimVerifier(
+                llm_client=self.openai.http_client,
+                llm_config=verification_config
+            )
+            
+            # Run verification pipeline
+            verification = await verifier.verify_response(
+                response_text=response_text,
+                context=context,
+                verification_level=os.getenv("CLAIM_VERIFICATION_LEVEL", "standard")
+            )
+            
+            # Add inline warnings to response text if enabled
+            if os.getenv("CLAIM_VERIFICATION_INLINE", "true").lower() == "true":
+                annotated_text = annotate_response_with_warnings(response_text, verification)
+                
+                # Inject annotated text back into response
+                provider = context.get("provider", "openai")
+                if provider == "openai":
+                    if "choices" in llm_response and len(llm_response["choices"]) > 0:
+                        llm_response["choices"][0]["message"]["content"] = annotated_text
+                elif provider == "claude":
+                    if "content" in llm_response and len(llm_response["content"]) > 0:
+                        llm_response["content"][0]["text"] = annotated_text
+                elif provider == "gemini":
+                    if "candidates" in llm_response and len(llm_response["candidates"]) > 0:
+                        candidate = llm_response["candidates"][0]
+                        if "content" in candidate and "parts" in candidate["content"]:
+                            candidate["content"]["parts"][0]["text"] = annotated_text
+            
+            return verification
+            
+        except Exception as e:
+            print(f"Claim verification error: {e}")
+            # Don't fail the request if verification fails
+            return None
