@@ -370,28 +370,37 @@ Respond in JSON:
         return verified_claims
     
     async def _call_llm(self, prompt: str, stage: str) -> Dict[str, Any]:
-        """Call LLM for verification tasks."""
+        """Call LLM for verification tasks. Supports both cloud and local models."""
         try:
             # Use the configured verification LLM
             model = self.llm_config.get("model", "gpt-4o-mini")
             api_key = self.llm_config.get("api_key", "")
             base_url = self.llm_config.get("base_url", "https://api.openai.com/v1")
+            require_auth = self.llm_config.get("require_auth", True)
+            
+            # Build headers (optional auth for local models)
+            headers = {"Content-Type": "application/json"}
+            if require_auth and api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            
+            # Build request payload
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are an expert in claim extraction and verification. Always respond with valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.1  # Low temperature for consistency
+            }
+            
+            # Only add response_format for models that support it (OpenAI, some local models)
+            if self.llm_config.get("supports_json_mode", True):
+                payload["response_format"] = {"type": "json_object"}
             
             response = await self.llm_client.post(
                 f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are an expert in claim extraction and verification. Always respond with valid JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.1,  # Low temperature for consistency
-                    "response_format": {"type": "json_object"}
-                },
+                headers=headers,
+                json=payload,
                 timeout=30.0
             )
             

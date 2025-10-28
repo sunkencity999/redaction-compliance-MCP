@@ -335,6 +335,13 @@ CLAIM_VERIFICATION_MODEL=gpt-4o-mini
 CLAIM_VERIFICATION_LEVEL=standard
 CLAIM_VERIFICATION_INLINE=true
 
+# Local Model Support (vLLM, FastAPI, etc.)
+# For local models: Set BASE_URL to your local endpoint, REQUIRE_AUTH=false
+# CLAIM_VERIFICATION_BASE_URL=http://localhost:8000/v1
+# CLAIM_VERIFICATION_API_KEY=
+# CLAIM_VERIFICATION_REQUIRE_AUTH=false
+# CLAIM_VERIFICATION_SUPPORTS_JSON=false
+
 # SIEM Configuration
 EOF
 

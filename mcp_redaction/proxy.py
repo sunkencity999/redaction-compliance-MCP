@@ -801,10 +801,13 @@ class TransparentProxyHandler:
             from .claim_verification import ClaimVerifier, annotate_response_with_warnings
             
             # Get verification LLM configuration
+            # Supports both cloud (OpenAI) and local (vLLM, FastAPI) models
             verification_config = {
                 "model": os.getenv("CLAIM_VERIFICATION_MODEL", "gpt-4o-mini"),
-                "api_key": os.getenv("OPENAI_API_KEY", ""),
-                "base_url": os.getenv("OPENAI_UPSTREAM_URL", "https://api.openai.com/v1").replace("/chat/completions", "")
+                "api_key": os.getenv("CLAIM_VERIFICATION_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+                "base_url": os.getenv("CLAIM_VERIFICATION_BASE_URL", os.getenv("OPENAI_UPSTREAM_URL", "https://api.openai.com/v1").replace("/chat/completions", "")),
+                "require_auth": os.getenv("CLAIM_VERIFICATION_REQUIRE_AUTH", "true").lower() == "true",
+                "supports_json_mode": os.getenv("CLAIM_VERIFICATION_SUPPORTS_JSON", "true").lower() == "true"
             }
             
             # Create verifier with shared HTTP client

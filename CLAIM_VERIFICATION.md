@@ -187,6 +187,217 @@ Set `CLAIM_VERIFICATION_INLINE=false` to receive only metadata:
 
 ---
 
+## 🏠 Local Model Support (vLLM, FastAPI, Ollama)
+
+You can use **local on-premises models** for claim verification instead of cloud APIs. This is ideal for:
+- **Privacy** - Keep all data on-prem
+- **Cost** - No API fees
+- **Performance** - Lower latency for local inference
+- **Control** - Full control over model selection
+
+### vLLM Setup Example
+
+**1. Install vLLM:**
+```bash
+pip install vllm
+```
+
+**2. Start vLLM server with OpenAI-compatible API:**
+```bash
+vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --api-key none
+```
+
+**3. Configure MCP to use local model:**
+
+Edit `.env`:
+```bash
+# Enable claim verification
+CLAIM_VERIFICATION_ENABLED=true
+
+# Local vLLM configuration
+CLAIM_VERIFICATION_BASE_URL=http://localhost:8000/v1
+CLAIM_VERIFICATION_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+CLAIM_VERIFICATION_REQUIRE_AUTH=false
+CLAIM_VERIFICATION_SUPPORTS_JSON=false
+
+# Verification settings
+CLAIM_VERIFICATION_LEVEL=standard
+CLAIM_VERIFICATION_INLINE=true
+```
+
+**4. Restart MCP server:**
+```bash
+sudo systemctl restart mcp-redaction
+```
+
+### FastAPI + Transformers Setup
+
+**Example local inference server:**
+```python
+# local_llm_server.py
+from fastapi import FastAPI
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+
+app = FastAPI()
+
+model_name = "mistralai/Mistral-7B-Instruct-v0.2"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16,
+    device_map="auto"
+)
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: dict):
+    messages = request["messages"]
+    
+    # Format prompt
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False)
+    
+    # Generate
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=512,
+        temperature=request.get("temperature", 0.1)
+    )
+    
+    response_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+    
+    return {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": response_text
+            }
+        }]
+    }
+
+# Run: uvicorn local_llm_server:app --host 0.0.0.0 --port 8000
+```
+
+**Configure MCP:**
+```bash
+CLAIM_VERIFICATION_BASE_URL=http://localhost:8000/v1
+CLAIM_VERIFICATION_MODEL=mistralai/Mistral-7B-Instruct-v0.2
+CLAIM_VERIFICATION_REQUIRE_AUTH=false
+CLAIM_VERIFICATION_SUPPORTS_JSON=false
+```
+
+### Ollama Setup
+
+**1. Install Ollama:**
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+**2. Pull a model:**
+```bash
+ollama pull llama3.1:8b-instruct-q4_K_M
+```
+
+**3. Start Ollama with OpenAI-compatible API:**
+```bash
+ollama serve
+```
+
+**4. Configure MCP:**
+```bash
+CLAIM_VERIFICATION_BASE_URL=http://localhost:11434/v1
+CLAIM_VERIFICATION_MODEL=llama3.1:8b-instruct-q4_K_M
+CLAIM_VERIFICATION_REQUIRE_AUTH=false
+CLAIM_VERIFICATION_SUPPORTS_JSON=false
+```
+
+### Recommended Local Models
+
+| Model | Size | Speed | Quality | Use Case |
+|-------|------|-------|---------|----------|
+| **Llama-3.1-8B-Instruct** | 8B | Fast | Good | General verification |
+| **Mistral-7B-Instruct-v0.2** | 7B | Fast | Good | Cost-effective |
+| **Llama-3.1-70B-Instruct** | 70B | Slow | Excellent | High-accuracy needs |
+| **Qwen2.5-14B-Instruct** | 14B | Medium | Excellent | Technical/scientific |
+| **DeepSeek-Coder-33B** | 33B | Medium | Excellent | Engineering/code |
+
+### Hardware Requirements
+
+| Model Size | VRAM | RAM | Speed |
+|------------|------|-----|-------|
+| 7B (Q4) | 4-6 GB | 8 GB | ~20 tok/s |
+| 8B (Q4) | 5-7 GB | 8 GB | ~20 tok/s |
+| 13B (Q4) | 8-10 GB | 16 GB | ~15 tok/s |
+| 70B (Q4) | 40-48 GB | 64 GB | ~5 tok/s |
+
+### Configuration Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLAIM_VERIFICATION_BASE_URL` | OpenAI API | Local model endpoint |
+| `CLAIM_VERIFICATION_MODEL` | `gpt-4o-mini` | Model name/path |
+| `CLAIM_VERIFICATION_API_KEY` | (empty) | API key (leave empty for local) |
+| `CLAIM_VERIFICATION_REQUIRE_AUTH` | `true` | Set to `false` for local models |
+| `CLAIM_VERIFICATION_SUPPORTS_JSON` | `true` | Set to `false` if model doesn't support JSON mode |
+
+### Testing Local Setup
+
+```python
+import openai
+
+# Point to your local model via MCP
+openai.api_base = "http://localhost:8019/v1"
+openai.api_key = "your-key"
+
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "What is 2+2?"}]
+)
+
+# Check if local verification worked
+if "mcp_verification" in response:
+    print("✅ Local verification working!")
+    print(f"Claims verified: {response['mcp_verification']['total_claims']}")
+else:
+    print("❌ Verification not running")
+```
+
+### Performance Comparison
+
+| Setup | Latency | Cost | Privacy |
+|-------|---------|------|---------|
+| **Cloud (GPT-4o-mini)** | ~500ms | $0.0003/req | ❌ Data leaves network |
+| **Local (Llama-3.1-8B)** | ~300ms | $0 | ✅ Data stays local |
+| **Local (Llama-3.1-70B)** | ~2000ms | $0 | ✅ Data stays local |
+
+### Troubleshooting
+
+**Issue: "Connection refused"**
+```bash
+# Check if local model is running
+curl http://localhost:8000/v1/models
+
+# Check MCP logs
+journalctl -u mcp-redaction -f
+```
+
+**Issue: "Model doesn't return JSON"**
+```bash
+# Disable JSON mode requirement
+CLAIM_VERIFICATION_SUPPORTS_JSON=false
+```
+
+**Issue: "Slow verification"**
+```bash
+# Use smaller model or quantized version
+CLAIM_VERIFICATION_MODEL=llama3.1:8b-instruct-q4_K_M
+```
+
+---
+
 ## ⚙️ Configuration
 
 ### Environment Variables
@@ -268,17 +479,17 @@ response = client.chat.completions.create(
 # Historical inaccuracies flagged
 ```
 
-### 4. **Customer Support**
+### 4. **Technical/Engineering/Scientific Claims**
 ```python
-# Ensure accurate product information
-headers = {"X-MCP-Domain": "product_support"}
+# Verify technical specifications, engineering calculations, scientific facts
+headers = {"X-MCP-Domain": "engineering"}
 
 response = openai.ChatCompletion.create(
     model="gpt-4",
-    messages=[{"role": "user", "content": "Does this product support 5G?"}],
+    messages=[{"role": "user", "content": "Calculate the load capacity of a steel beam"}],
     headers=headers
 )
-# Incorrect specs flagged
+# Wrong formulas, incorrect constants, or fabricated specifications flagged
 ```
 
 ---
