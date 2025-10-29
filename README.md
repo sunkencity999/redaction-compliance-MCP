@@ -242,6 +242,65 @@ DETOKENIZE_TRUSTED_CALLERS=openai-proxy,claude-proxy,gemini-proxy
 
 ---
 
+## 🛡️ Claim Verification (Hallucination Detection)
+
+**Optional post-processing layer to verify factual accuracy of LLM responses:**
+
+Inspired by Claimify research, this feature analyzes LLM responses through a 4-stage pipeline to detect and flag potential hallucinations and false claims.
+
+```python
+# Enable in .env
+CLAIM_VERIFICATION_ENABLED=true
+CLAIM_VERIFICATION_MODEL=gpt-4o-mini  # Or local model
+
+# Use any LLM normally via transparent proxy
+response = openai.ChatCompletion.create(
+    model="gpt-4",
+    messages=[{"role": "user", "content": "What was Argentina's inflation in 2023?"}]
+)
+
+# If LLM hallucinates a wrong number, you'll see:
+print(response.choices[0].message.content)
+# "Argentina's inflation reached 300% in 2023."
+# ⚠️ **[CLAIM FLAGGED - HIGH CONFIDENCE]**: This claim is likely false. 
+# Evidence suggests Argentina's inflation was approximately 211% in 2023.
+```
+
+**4-Stage Verification Pipeline:**
+1. **Sentence Splitting** - Break response into sentences with context
+2. **Selection** - Filter to verifiable factual claims
+3. **Disambiguation** - Resolve or flag ambiguous statements
+4. **Decomposition** - Extract atomic, standalone claims
+5. **Verification** - Fact-check each claim with confidence scores
+
+**Output Modes:**
+- **Inline Warnings**: 🚨 High, ⚠️ Medium, ℹ️ Low confidence flags added to text
+- **Metadata**: Full verification details in `mcp_verification` response field
+- **No Blocking**: Users always see full response + warnings (inform, don't censor)
+
+**Local Model Support:**
+```bash
+# Use vLLM, Ollama, or FastAPI locally (no API fees, full privacy)
+CLAIM_VERIFICATION_BASE_URL=http://localhost:8000/v1
+CLAIM_VERIFICATION_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+CLAIM_VERIFICATION_REQUIRE_AUTH=false  # No authentication needed
+```
+
+**Use Cases:**
+- ✅ **Technical/Engineering** - Verify calculations, formulas, specifications
+- ✅ **Scientific** - Fact-check research claims, data, constants
+- ✅ **Financial** - Validate statistics, market data, economic claims
+- ✅ **Medical** - Verify dosages, symptoms, treatments (strict mode)
+
+**Performance:**
+- Latency: ~500-1000ms per response (cloud) or ~300ms (local)
+- Cost: ~$0.0003/response with gpt-4o-mini, $0 with local models
+- Caching: ~80% hit rate reduces both latency and cost
+
+**Full Guide:** See `CLAIM_VERIFICATION.md` for complete setup, configuration, and examples.
+
+---
+
 ## 🌐 API Endpoints (REST)
 
 **Core MCP Endpoints:**
