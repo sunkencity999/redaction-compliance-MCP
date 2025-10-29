@@ -2,7 +2,7 @@ import os, hmac, hashlib, json, time, base64
 from typing import Dict, Tuple, Optional, Protocol
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import orjson
 
 class TokenStore(Protocol):
@@ -80,7 +80,7 @@ class RedisTokenStore:
             raise RuntimeError("MCP_ENCRYPTION_KEY environment variable required for RedisTokenStore")
         
         # Derive AES-256 key from provided key using PBKDF2
-        kdf = PBKDF2(
+        kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=b"mcp-redaction-salt-v1",  # Static salt for deterministic key derivation

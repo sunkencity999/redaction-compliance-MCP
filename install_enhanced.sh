@@ -1250,14 +1250,13 @@ health_check() {
 generate_summary() {
     local status=$1
     
-    # Ensure we can write to the summary file
-    if [ ! -w "$(dirname "$SUMMARY_FILE")" ]; then
-        log_warn "Cannot write summary to $SUMMARY_FILE"
+    # Test if we can actually write to the summary file location
+    if ! touch "$SUMMARY_FILE" 2>/dev/null; then
         SUMMARY_FILE="/tmp/mcp-install-summary.txt"
-        log_info "Using alternate location: $SUMMARY_FILE"
     fi
     
-    cat > "$SUMMARY_FILE" <<EOF
+    # Write summary (suppress errors to avoid breaking error handler)
+    cat > "$SUMMARY_FILE" 2>/dev/null <<EOF || return 0
 MCP Redaction & Compliance Server - Installation Summary
 Generated: $(date)
 Installer Version: $SCRIPT_VERSION
@@ -1304,7 +1303,10 @@ IMPORTANT:
 For support: https://github.com/sunkencity999/redaction-compliance-MCP
 EOF
     
-    log_info "Installation summary saved: $SUMMARY_FILE"
+    # Only log if successful (avoid errors in error handler)
+    if [ -f "$SUMMARY_FILE" ]; then
+        log_info "Installation summary saved: $SUMMARY_FILE" 2>/dev/null || true
+    fi
 }
 
 # ============================================================================
