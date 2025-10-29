@@ -28,7 +28,7 @@ This document summarizes the complete implementation of the production-ready Red
 
 ### 2. **Claim Verification System** (`mcp_redaction/claim_verification.py`)
 
-#### Claimify-Inspired 4-Stage Pipeline
+#### Research-Based 4-Stage Pipeline
 - **Stage 1**: Sentence splitting with context windows
 - **Stage 2**: Selection (verifiable vs unverifiable content)
 - **Stage 3**: Disambiguation (resolve or flag ambiguity)

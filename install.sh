@@ -329,7 +329,7 @@ DETOKENIZE_TRUSTED_CALLERS=demo_client,openai-proxy,claude-proxy,gemini-proxy
 # CORS Configuration (for browser-based apps)
 CORS_ORIGINS=*
 
-# Claim Verification (Claimify-based hallucination detection)
+# Claim Verification (Research-based hallucination detection)
 CLAIM_VERIFICATION_ENABLED=false
 CLAIM_VERIFICATION_MODEL=gpt-4o-mini
 CLAIM_VERIFICATION_LEVEL=standard

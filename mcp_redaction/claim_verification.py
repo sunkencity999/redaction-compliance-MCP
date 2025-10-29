@@ -1,5 +1,5 @@
 """
-Claim Verification Module - Inspired by Claimify
+Claim Verification Module - Research-Based Approach
 Reduces hallucinations and false claims in LLM responses using a 4-stage pipeline:
 1. Sentence splitting and context creation
 2. Selection (verifiable vs unverifiable content)
@@ -62,7 +62,7 @@ class VerificationResult:
 
 class ClaimVerifier:
     """
-    Verifies claims in LLM responses using the Claimify approach.
+    Verifies claims in LLM responses using a research-based approach.
     Reduces hallucinations and provides transparency about factual accuracy.
     """
     

@@ -10,7 +10,7 @@ reversible redaction, selective detokenization, output safety, and immutable aud
 
 ### 🎯 Core Capabilities
 - **🔄 Streaming Support**: Real-time streaming for OpenAI, Claude, and Gemini with chunk-by-chunk detokenization
-- **🛡️ Claim Verification**: Optional Claimify-inspired hallucination detection with inline warnings (supports local models)
+- **🛡️ Claim Verification**: Research-based hallucination detection with inline warnings (supports local models)
 - **🚀 Transparent Proxy**: Zero-code integration - just change your API base URL
 - **📊 Production-Grade**: NGINX, HTTPS, SIEM integration, Redis backend, systemd service
 
@@ -246,7 +246,7 @@ DETOKENIZE_TRUSTED_CALLERS=openai-proxy,claude-proxy,gemini-proxy
 
 **Optional post-processing layer to verify factual accuracy of LLM responses:**
 
-Inspired by Claimify research, this feature analyzes LLM responses through a 4-stage pipeline to detect and flag potential hallucinations and false claims.
+Using a research-based approach, this feature analyzes LLM responses through a 4-stage pipeline to detect and flag potential hallucinations and false claims.
 
 ```python
 # Enable in .env

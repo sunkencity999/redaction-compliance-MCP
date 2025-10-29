@@ -1,6 +1,6 @@
 # Claim Verification - Hallucination Detection
 
-**Inspired by Claimify** | Reduces false claims and hallucinations in LLM responses
+**Research-Based Approach** | Reduces false claims and hallucinations in LLM responses
 
 This feature adds an optional **post-processing layer** that verifies claims in LLM responses, flags potential hallucinations, and provides transparency about factual accuracy.
 
@@ -644,9 +644,9 @@ A: The response is still returned, just without verification metadata. Errors ar
 
 ## 📚 References
 
-This implementation is inspired by **Claimify**, a research project on claim extraction:
+This implementation is inspired by research on systematic claim extraction:
 
-- [Claimify Research](https://contextual.ai/blog/claim-extraction-challenges/)
+- [Research Article: Claim Extraction Challenges](https://contextual.ai/blog/claim-extraction-challenges/)
 - Core principles: Entailment, context preservation, ambiguity detection
 - Adapted for real-time LLM response verification
 
