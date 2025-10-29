@@ -8,6 +8,12 @@ reversible redaction, selective detokenization, output safety, and immutable aud
 
 ## ✨ Features
 
+### 🎯 Core Capabilities
+- **🔄 Streaming Support**: Real-time streaming for OpenAI, Claude, and Gemini with chunk-by-chunk detokenization
+- **🛡️ Claim Verification**: Optional Claimify-inspired hallucination detection with inline warnings (supports local models)
+- **🚀 Transparent Proxy**: Zero-code integration - just change your API base URL
+- **📊 Production-Grade**: NGINX, HTTPS, SIEM integration, Redis backend, systemd service
+
 ### 🔍 Advanced Detection
 - **Multi-cloud credentials**: AWS (AKID, secrets), Azure (Storage Keys, SAS tokens, Connection Strings), GCP (API keys, OAuth)
 - **OAuth & Bearer tokens**: JWT detection, OAuth access tokens
@@ -211,18 +217,28 @@ response = openai.ChatCompletion.create(
 ```
 
 **Supported Providers:**
-- ✅ **OpenAI** (`/v1/chat/completions`)
-- ✅ **Claude** (`/v1/messages`)  
-- ✅ **Gemini** (`/v1/models/{model}:generateContent`)
+- ✅ **OpenAI** (`/v1/chat/completions`) - Streaming supported
+- ✅ **Claude** (`/v1/messages`) - Streaming supported
+- ✅ **Gemini** (`/v1/models/{model}:generateContent`) - Streaming supported
+
+**Features:**
+- ✅ Real-time streaming with chunk-by-chunk detokenization
+- ✅ Optional claim verification (hallucination detection)
+- ✅ Local model support (vLLM, Ollama, FastAPI)
+- ✅ Automatic redaction + detokenization
+- ✅ Full audit trail in SIEM
 
 **Setup:**
 ```bash
 # In .env file
 PROXY_MODE_ENABLED=true
+CLAIM_VERIFICATION_ENABLED=false  # Optional
 DETOKENIZE_TRUSTED_CALLERS=openai-proxy,claude-proxy,gemini-proxy
 ```
 
-**Full Guide:** See `TRANSPARENT_PROXY.md`
+**Full Guides:** 
+- `TRANSPARENT_PROXY.md` - Proxy mode documentation
+- `CLAIM_VERIFICATION.md` - Hallucination detection guide
 
 ---
 
