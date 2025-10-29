@@ -1,3 +1,11 @@
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file from project root
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -17,7 +25,7 @@ from .audit import (
     BufferedSIEMShipper,
 )
 from .classifier import classify_export_control, should_enforce_internal_only
-import os, json, hmac, hashlib, time
+import json, hmac, hashlib, time
 
 def create_siem_shipper():
     """Create SIEM shipper based on environment configuration."""
