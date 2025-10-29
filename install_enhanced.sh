@@ -10,7 +10,7 @@ set -eE  # Exit on error and inherit ERR trap
 # CONFIGURATION
 # ============================================================================
 
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.1.1"
 INSTALL_DIR="/opt/mcp-redaction"
 SERVICE_USER="mcp"
 SERVICE_NAME="mcp-redaction"
@@ -601,7 +601,20 @@ download_repository() {
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             log_info "Removing existing directory..."
-            rm -rf "$INSTALL_DIR"
+            
+            # On macOS, /opt typically requires sudo for write operations
+            if [ "$OS_TYPE" == "darwin" ]; then
+                log_info "macOS: Using elevated permissions to remove /opt directory"
+                sudo rm -rf "$INSTALL_DIR" || {
+                    log_error "Failed to remove directory. Try manually: sudo rm -rf $INSTALL_DIR"
+                    return 1
+                }
+            else
+                rm -rf "$INSTALL_DIR" || {
+                    log_error "Failed to remove directory"
+                    return 1
+                }
+            fi
         else
             log_info "Using existing installation directory"
             mark_step_complete "REPOSITORY"
@@ -612,19 +625,37 @@ download_repository() {
     log_info "Cloning from GitHub: $REPO_URL"
     log_debug "Target directory: $INSTALL_DIR"
     
-    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || {
-        log_error "Failed to clone repository"
-        log_error "Check internet connection and GitHub access"
-        return 1
-    }
+    # On macOS, create /opt directory with sudo if needed
+    if [ "$OS_TYPE" == "darwin" ] && [ ! -d "$(dirname "$INSTALL_DIR")" ]; then
+        log_info "Creating /opt directory with elevated permissions..."
+        sudo mkdir -p "$(dirname "$INSTALL_DIR")" || {
+            log_error "Failed to create /opt directory"
+            return 1
+        }
+    fi
     
-    log_info "Repository downloaded ✓"
-    
-    # Set ownership
-    if [ "$OS_TYPE" == "linux" ]; then
+    # Clone repository - use sudo on macOS for /opt
+    if [ "$OS_TYPE" == "darwin" ]; then
+        sudo git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || {
+            log_error "Failed to clone repository"
+            log_error "Check internet connection and GitHub access"
+            return 1
+        }
+        # Give current user ownership
+        sudo chown -R "$ACTUAL_USER:staff" "$INSTALL_DIR"
+        log_debug "Set ownership to $ACTUAL_USER:staff"
+    else
+        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || {
+            log_error "Failed to clone repository"
+            log_error "Check internet connection and GitHub access"
+            return 1
+        }
+        # Set ownership on Linux
         chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
         log_debug "Set ownership to $SERVICE_USER"
     fi
+    
+    log_info "Repository downloaded ✓"
     
     mark_step_complete "REPOSITORY"
 }
@@ -1218,6 +1249,13 @@ health_check() {
 
 generate_summary() {
     local status=$1
+    
+    # Ensure we can write to the summary file
+    if [ ! -w "$(dirname "$SUMMARY_FILE")" ]; then
+        log_warn "Cannot write summary to $SUMMARY_FILE"
+        SUMMARY_FILE="/tmp/mcp-install-summary.txt"
+        log_info "Using alternate location: $SUMMARY_FILE"
+    fi
     
     cat > "$SUMMARY_FILE" <<EOF
 MCP Redaction & Compliance Server - Installation Summary
