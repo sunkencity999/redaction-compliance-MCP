@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Any, Dict, List, Tuple
 from .models import *
 from .config import settings
@@ -248,7 +248,7 @@ def health_check():
             "status": "healthy",
             "version": "2.0.0",
             "token_backend": settings.token_backend,
-            "policy_version": policy.policy.get("version", 1),
+            "policy_version": policy.doc.get("version", 1),
             "siem_enabled": bool(audit.siem_shipper),
             "proxy_mode_enabled": bool(os.getenv("PROXY_MODE_ENABLED", "false").lower() == "true")
         })
