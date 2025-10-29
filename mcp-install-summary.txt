@@ -1,0 +1,44 @@
+MCP Redaction & Compliance Server - Installation Summary
+Generated: Wed Oct 29 14:26:13 PDT 2025
+Installer Version: 2.1.0
+Status: FAILED
+
+PLATFORM:
+  OS Type: darwin
+  Distribution: macos
+  Package Manager: brew
+
+INSTALLATION:
+  Install Directory: /opt/mcp-redaction
+  Service User: root
+  Service Name: mcp-redaction
+
+CONFIGURATION:
+  Secrets File: /root/.mcp-secrets
+  Environment File: /opt/mcp-redaction/.env
+  SIEM Type: none
+  Proxy Mode: ENABLED
+  Claim Verification: DISABLED (configurable)
+
+LOGS:
+  Installation Log: /Users/christopher.bradford/redaction-compliance-mcp/mcp-install-20251029-142551.log
+  Service Logs: /opt/mcp-redaction/logs
+  Audit Logs: /opt/mcp-redaction/audit/
+
+SERVICE ACCESS:
+  Local URL: http://localhost:8019
+  Health Check: curl http://localhost:8019/health
+
+NEXT STEPS:
+  1. Test the API: curl http://localhost:8019/health
+  2. Review configuration: cat /opt/mcp-redaction/.env
+  3. Check logs: tail -f /opt/mcp-redaction/logs/stderr.log
+  4. Enable claim verification (optional): Edit /opt/mcp-redaction/.env
+
+IMPORTANT:
+  - Secrets backed up: /root/.mcp-secrets
+  - Review security settings before production use
+  - Configure firewall rules as needed
+  - Update trusted callers in policy file
+
+For support: https://github.com/sunkencity999/redaction-compliance-MCP
