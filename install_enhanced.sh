@@ -14,14 +14,25 @@ SCRIPT_VERSION="2.1.0"
 INSTALL_DIR="/opt/mcp-redaction"
 SERVICE_USER="mcp"
 SERVICE_NAME="mcp-redaction"
-STATE_FILE="/tmp/mcp-install-state.conf"
-SECRETS_FILE="/root/.mcp-secrets"
+STATE_FILE=""
+SECRETS_FILE=""
 REPO_URL="https://github.com/sunkencity999/redaction-compliance-MCP.git"
+
+# Will be set after platform detection
 
 # Logging
 LOG_DIR="$(pwd)"
 LOG_FILE="$LOG_DIR/mcp-install-$(date +%Y%m%d-%H%M%S).log"
 SUMMARY_FILE="$LOG_DIR/mcp-install-summary.txt"
+
+# Determine actual user (even if running with sudo)
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+    ACTUAL_HOME=$(eval echo ~$SUDO_USER)
+else
+    ACTUAL_USER=$(whoami)
+    ACTUAL_HOME="$HOME"
+fi
 
 # Platform detection
 OS_TYPE=""  # linux or darwin
@@ -50,23 +61,23 @@ log() {
     # Log to file with full details
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
     
-    # Console output with colors
+    # Console output with colors (no tee to avoid duplicates)
     case $level in
         INFO)
-            echo -e "${GREEN}✓${NC} $message" | tee -a /dev/tty
+            echo -e "${GREEN}✓${NC} $message"
             ;;
         WARN)
-            echo -e "${YELLOW}⚠${NC} $message" | tee -a /dev/tty
+            echo -e "${YELLOW}⚠${NC} $message"
             ;;
         ERROR)
-            echo -e "${RED}✗${NC} $message" | tee -a /dev/tty
+            echo -e "${RED}✗${NC} $message"
             ;;
         STEP)
-            echo -e "\n${BLUE}═══${NC} ${CYAN}$message${NC} ${BLUE}═══${NC}" | tee -a /dev/tty
+            echo -e "\n${BLUE}═══${NC} ${CYAN}$message${NC} ${BLUE}═══${NC}"
             ;;
         DEBUG)
             if [ "${DEBUG:-false}" == "true" ]; then
-                echo -e "${CYAN}  ↳${NC} $message" | tee -a /dev/tty
+                echo -e "${CYAN}  ↳${NC} $message"
             fi
             echo "[$timestamp] [DEBUG] $message" >> "$LOG_FILE"
             ;;
@@ -100,14 +111,32 @@ log_debug() {
 save_state() {
     local key=$1
     local value=$2
-    mkdir -p "$(dirname "$STATE_FILE")"
+    
+    # Ensure STATE_FILE is set
+    if [ -z "$STATE_FILE" ]; then
+        log_warn "STATE_FILE not set yet, skipping state save"
+        return 0
+    fi
+    
+    # Create directory if needed
+    mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+    
+    # Ensure we can write to state file
+    if [ ! -w "$(dirname "$STATE_FILE")" ] && [ ! -w "$STATE_FILE" ]; then
+        log_warn "Cannot write to state file: $STATE_FILE"
+        return 0
+    fi
     
     # Remove existing key if present
     if [ -f "$STATE_FILE" ]; then
-        sed -i.bak "/^${key}=/d" "$STATE_FILE" 2>/dev/null || true
+        if [ "$OS_TYPE" == "darwin" ]; then
+            sed -i '' "/^${key}=/d" "$STATE_FILE" 2>/dev/null || true
+        else
+            sed -i "/^${key}=/d" "$STATE_FILE" 2>/dev/null || true
+        fi
     fi
     
-    echo "${key}=${value}" >> "$STATE_FILE"
+    echo "${key}=${value}" >> "$STATE_FILE" 2>/dev/null || true
     log_debug "Saved state: $key=$value"
 }
 
@@ -298,6 +327,14 @@ detect_platform() {
         Darwin*)
             OS_TYPE="darwin"
             log_info "Platform: macOS"
+            
+            # macOS-specific checks
+            if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+                log_error "Do NOT run this script with sudo on macOS!"
+                log_error "Homebrew refuses to run as root for security reasons."
+                log_error "Please run: ./install_enhanced.sh (without sudo)"
+                exit 1
+            fi
             ;;
         *)
             log_error "Unsupported operating system: $(uname -s)"
@@ -305,6 +342,18 @@ detect_platform() {
             exit 1
             ;;
     esac
+    
+    # Set platform-specific paths
+    if [ "$OS_TYPE" == "darwin" ]; then
+        # macOS: Use user-specific locations
+        STATE_FILE="$ACTUAL_HOME/.mcp-install-state.conf"
+        SECRETS_FILE="$ACTUAL_HOME/.mcp-secrets"
+        log_debug "macOS paths: STATE=$STATE_FILE, SECRETS=$SECRETS_FILE"
+    else
+        # Linux: Use system locations
+        STATE_FILE="/tmp/mcp-install-state.conf"
+        SECRETS_FILE="/root/.mcp-secrets"
+    fi
     
     # Detect specific distribution
     if [ "$OS_TYPE" == "linux" ]; then
@@ -379,9 +428,15 @@ check_prerequisites() {
         PY_VER=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))' 2>/dev/null || echo "0.0")
         log_info "Python found: $PY_VER"
         
-        if (( $(echo "$PY_VER < 3.9" | bc -l 2>/dev/null || echo 1) )); then
+        # Convert version to comparable number (e.g., 3.11 -> 311, 3.9 -> 309)
+        PY_VER_NUM=$(echo "$PY_VER" | awk -F. '{printf "%d%02d", $1, $2}')
+        REQUIRED_VER_NUM=309  # 3.9
+        
+        if [ "$PY_VER_NUM" -lt "$REQUIRED_VER_NUM" ]; then
             log_warn "Python $PY_VER is too old. Need Python 3.9+"
             missing_deps+=("python3")
+        else
+            log_debug "Python version check passed: $PY_VER >= 3.9"
         fi
     else
         log_warn "Python3 not found"
@@ -676,7 +731,16 @@ MCP_TOKEN_SALT="$MCP_TOKEN_SALT"
 MCP_ENCRYPTION_KEY="$MCP_ENCRYPTION_KEY"
 EOF
     
-    chmod 600 "$SECRETS_FILE"
+    chmod 600 "$SECRETS_FILE" || {
+        log_error "Failed to set permissions on secrets file"
+        return 1
+    }
+    
+    # On macOS, ensure the actual user owns the file
+    if [ "$OS_TYPE" == "darwin" ] && [ -n "$ACTUAL_USER" ]; then
+        chown "$ACTUAL_USER" "$SECRETS_FILE" 2>/dev/null || true
+    fi
+    
     log_debug "Set permissions on secrets file: 600"
     
     echo -e "\n${GREEN}═══════════════════════════════════════════════════════${NC}"
@@ -1284,19 +1348,26 @@ main_install() {
     log_info "Log file: $LOG_FILE"
     log_info "Platform: $(uname -s) $(uname -m)"
     
+    # Platform detection FIRST (sets paths)
+    detect_platform
+    
     # Load previous state if exists
     load_state || log_info "Starting fresh installation"
     
-    # Check root/sudo (Linux only)
-    if [ "$OS_TYPE" == "linux" ] || [ -z "$OS_TYPE" ]; then
+    # Check root/sudo requirements
+    if [ "$OS_TYPE" == "linux" ]; then
         if [ "$EUID" -ne 0 ]; then
-            log_error "Please run as root (use sudo)"
+            log_error "Linux requires root access. Please run: sudo ./install_enhanced.sh"
+            exit 1
+        fi
+    elif [ "$OS_TYPE" == "darwin" ]; then
+        if [ "$EUID" -eq 0 ]; then
+            log_error "macOS should NOT be run with sudo. Please run: ./install_enhanced.sh"
             exit 1
         fi
     fi
     
-    # Installation steps
-    detect_platform
+    # Installation steps (platform already detected above)
     check_prerequisites
     create_service_user
     download_repository
