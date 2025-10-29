@@ -70,15 +70,22 @@ API response → Extension intercepts → Detokenizes → Shows to user
 
 #### Capabilities:
 - **Extract claims** from LLM responses
-- **Verify** using local LLM (Ollama, LM Studio, vLLM)
+- **Verify** using company-hosted local LLM (FastAPI endpoint)
 - **Annotate** response with warnings
 - **Support** streaming verification (async)
 
 #### Local LLM Integration:
-- **API Endpoint**: `http://localhost:11434/api/chat` (Ollama)
-- **Alternative**: LM Studio, vLLM, any OpenAI-compatible local API
-- **Models**: llama3, mistral, phi-3, or custom
-- **Fallback**: Skip verification if local LLM unavailable
+- **Default**: Company-hosted FastAPI endpoint (OpenAI-compatible)
+  - **API Endpoint**: `http://llm.internal.company.com/v1/chat/completions`
+  - Centrally managed by IT/ML team
+  - Consistent model versions across organization
+  - Optional authentication via API key or OAuth
+- **Alternative Options**:
+  - **Ollama**: `http://localhost:11434/api/chat` (user-installed)
+  - **LM Studio**: `http://localhost:1234/v1/chat/completions`
+  - **vLLM**: Any OpenAI-compatible endpoint
+- **Models**: Company-approved models or user-selected (llama3, mistral, phi-3, etc.)
+- **Fallback**: Skip verification if LLM endpoint unavailable
 
 #### Verification Process:
 1. **Parse** LLM response into claims
@@ -146,7 +153,9 @@ mcp-extension/
     "https://api.openai.com/*",
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "http://localhost:11434/*"
+    "http://llm.internal.company.com/*",
+    "https://llm.internal.company.com/*",
+    "http://localhost:*"
   ],
   
   "background": {
@@ -278,12 +287,15 @@ const REDACTION_PATTERNS = {
 #### Key Functions:
 ```javascript
 class ClaimVerifier {
-  constructor(localLLMEndpoint) {
-    this.endpoint = localLLMEndpoint || 'http://localhost:11434/api/chat';
-    this.model = 'llama3';
+  constructor(config = {}) {
+    // Default: Company-hosted FastAPI endpoint (OpenAI-compatible)
+    this.endpoint = config.endpoint || 'http://llm.internal.company.com/v1/chat/completions';
+    this.model = config.model || 'company-approved-model';
+    this.apiKey = config.apiKey || null;  // Optional for internal endpoints
+    this.endpointType = config.type || 'openai-compatible';  // or 'ollama'
   }
   
-  // Verify claims in text using local LLM
+  // Verify claims in text using local/company LLM
   async verifyResponse(text) {
     try {
       // 1. Extract claims
@@ -328,18 +340,47 @@ Return JSON: {"confidence": <number>, "reasoning": "<string>"}`;
   }
   
   async queryLLM(prompt) {
+    const headers = { 'Content-Type': 'application/json' };
+    
+    // Add API key if configured (for authenticated endpoints)
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
+    
+    // Build request body based on endpoint type
+    const requestBody = this.endpointType === 'ollama' 
+      ? {
+          model: this.model,
+          messages: [{ role: 'user', content: prompt }],
+          stream: false
+        }
+      : {
+          // OpenAI-compatible format (FastAPI default)
+          model: this.model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3,
+          max_tokens: 500
+        };
+    
     const response = await fetch(this.endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        stream: false
-      })
+      headers,
+      body: JSON.stringify(requestBody)
     });
     
+    if (!response.ok) {
+      throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+    }
+    
     const data = await response.json();
-    return data.message.content;
+    
+    // Parse response based on endpoint type
+    if (this.endpointType === 'ollama') {
+      return data.message.content;
+    } else {
+      // OpenAI-compatible format
+      return data.choices[0].message.content;
+    }
   }
   
   annotateText(text, verifications) {
@@ -622,8 +663,12 @@ class SecureStorage {
 3. **Settings**
    - Enable/disable redaction
    - Configure patterns
-   - Local LLM endpoint
-   - Verification threshold
+   - **LLM Configuration**:
+     - Endpoint URL (default: company FastAPI server)
+     - Endpoint type: OpenAI-compatible (default) or Ollama
+     - Model name
+     - API key (optional, for authenticated endpoints)
+   - Verification confidence threshold (0-100%)
    - Auto-expire tokens (hours)
 
 4. **Audit Log Viewer**
@@ -640,10 +685,11 @@ class SecureStorage {
 - Auto-expire after configured duration
 - Never sent to external servers
 
-### 2. Local LLM Only
-- Verification happens entirely locally
-- No sensitive data sent to cloud
-- Fallback: Skip verification if local LLM unavailable
+### 2. Company/Local LLM Only
+- Verification uses company-hosted or local LLM
+- No sensitive data sent to public cloud
+- Options: Company FastAPI endpoint (default) or user-installed Ollama
+- Fallback: Skip verification if LLM endpoint unavailable
 
 ### 3. Permissions
 - Request minimal permissions
@@ -700,7 +746,7 @@ class SecureStorage {
 ### Required:
 - **Manifest V3** (Chrome Extension API)
 - **Web Crypto API** (encryption)
-- **Local LLM Server** (Ollama, LM Studio, or compatible)
+- **LLM Endpoint**: Company-hosted FastAPI server (default) or Ollama/LM Studio
 
 ### Optional:
 - **Chart.js** (statistics visualization in popup)
@@ -723,8 +769,9 @@ class SecureStorage {
 - ✅ Detokenization logic
 - ✅ Encrypted storage
 
-### Phase 3: Local LLM Integration (Week 4)
-- ✅ Ollama integration
+### Phase 3: LLM Integration (Week 4)
+- ✅ Company FastAPI endpoint integration (primary)
+- ✅ Ollama support (alternative)
 - ✅ Claim extraction
 - ✅ Verification logic
 - ✅ Response annotation
@@ -751,10 +798,21 @@ class SecureStorage {
    - Download from Chrome Web Store
    - Or load unpacked (developer mode)
 
-2. **Configure Local LLM**
+2. **Configure LLM Endpoint**
+   
+   **Option A: Company FastAPI Server (Default - Recommended)**
+   - URL: `http://llm.internal.company.com/v1/chat/completions`
+   - Pre-configured in extension settings
+   - Centrally managed by IT team
+   - No additional setup needed
+   - May require company VPN connection
+   
+   **Option B: Ollama (Alternative - User-managed)**
    - Install Ollama: `curl https://ollama.ai/install.sh | sh`
    - Pull model: `ollama pull llama3`
    - Start server: `ollama serve`
+   - Change endpoint in settings to: `http://localhost:11434/api/chat`
+   - Change type to: "Ollama"
 
 3. **Set Master Password**
    - Open extension popup
@@ -792,9 +850,17 @@ npm run test      # Run tests
 
 ### Common Issues:
 
-1. **"Local LLM not responding"**
+1. **"LLM endpoint not responding"**
+   
+   **If using company FastAPI server:**
+   - Check VPN connection (if required)
+   - Verify endpoint URL: `curl http://llm.internal.company.com/health`
+   - Contact IT if endpoint is down
+   
+   **If using Ollama:**
    - Check Ollama is running: `ollama list`
    - Verify endpoint: `curl http://localhost:11434/api/tags`
+   - Restart: `ollama serve`
 
 2. **"Redaction not working"**
    - Check extension is enabled
